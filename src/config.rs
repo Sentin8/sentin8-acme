@@ -112,7 +112,7 @@ impl AcmeConfig {
                 std::env::var("VALKEY_URL")
                     .ok()
                     .filter(|s| !s.trim().is_empty())
-                    .unwrap_or_else(|| sentin8::config::service_valkey_url())
+                    .unwrap_or_else(sentin8::config::service_valkey_url)
             }),
             sentin8_auth_url: env::var("SENTIN8_AUTH_URL").unwrap_or_else(|_| {
                 sentin8::config::Sentin8Config::from_env()

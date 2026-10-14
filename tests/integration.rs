@@ -115,33 +115,41 @@ mod tests {
         let local = vec!["local.sentin8.dev".to_string()];
         assert!(acme::is_local_domain("localhost", &local));
         assert!(acme::is_local_domain("myapp.localhost", &local));
-        assert!(acme::is_local_domain("sentin8-auth.ops.sys.sentin8.local", &local));
+        assert!(acme::is_local_domain(
+            "sentin8-auth.ops.sys.sentin8.local",
+            &local
+        ));
         assert!(acme::is_local_domain("127.0.0.1", &local));
         assert!(acme::is_local_domain("192.168.1.1", &local));
         assert!(acme::is_local_domain("10.0.0.1", &local));
         // Operator-declared local suffixes (DEVDOM-1).
         assert!(acme::is_local_domain(
             "bus.ops.sys.local.sentin8.dev",
-            &vec!["local.sentin8.dev".to_string(), "local.ibank.dev".to_string()]
+            &["local.sentin8.dev".to_string(),
+                "local.ibank.dev".to_string()]
         ));
         assert!(acme::is_local_domain(
             "bff.prod.ibank.local.ibank.dev",
-            &vec!["local.sentin8.dev".to_string(), "local.ibank.dev".to_string()]
+            &["local.sentin8.dev".to_string(),
+                "local.ibank.dev".to_string()]
         ));
         // Exact-suffix match, not substring.
         assert!(!acme::is_local_domain(
             "evilsentin8.dev",
-            &vec!["local.sentin8.dev".to_string()]
+            &["local.sentin8.dev".to_string()]
         ));
         assert!(!acme::is_local_domain(
             "local.sentin8.dev.evil.com",
-            &vec!["local.sentin8.dev".to_string()]
+            &["local.sentin8.dev".to_string()]
         ));
         assert!(!acme::is_local_domain("example.com", &local));
         assert!(!acme::is_local_domain("myorg.com", &local));
         // An empty suffix list still admits the builtin local forms.
-        assert!(acme::is_local_domain("localhost", &vec![]));
-        assert!(!acme::is_local_domain("bus.ops.sys.local.sentin8.dev", &vec![]));
+        assert!(acme::is_local_domain("localhost", &[]));
+        assert!(!acme::is_local_domain(
+            "bus.ops.sys.local.sentin8.dev",
+            &[]
+        ));
     }
 
     // ── Story 22.20.6 — Admin UI tests ──────────────────────────────────
@@ -370,7 +378,12 @@ mod tests {
             let nonce_counter = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
             let next_nonce = {
                 let counter = nonce_counter.clone();
-                move || format!("mock-nonce-{}", counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1)
+                move || {
+                    format!(
+                        "mock-nonce-{}",
+                        counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1
+                    )
+                }
             };
 
             let app = axum::Router::new()
@@ -413,8 +426,7 @@ mod tests {
                             async move {
                                 // The initial account registration carries the
                                 // JWK in the protected header (JWK mode).
-                                let jws: serde_json::Value =
-                                    serde_json::from_str(&body).unwrap();
+                                let jws: serde_json::Value = serde_json::from_str(&body).unwrap();
                                 let protected_b64 = jws["protected"].as_str().unwrap();
                                 let protected_raw =
                                     base64::engine::general_purpose::URL_SAFE_NO_PAD
@@ -470,7 +482,8 @@ mod tests {
                                     "nonce consumed in order"
                                 );
                                 let mut resp_headers = axum::http::HeaderMap::new();
-                                resp_headers.insert("Location", format!("{base}/order/1").parse().unwrap());
+                                resp_headers
+                                    .insert("Location", format!("{base}/order/1").parse().unwrap());
                                 resp_headers.insert("Replay-Nonce", n.parse().unwrap());
                                 (
                                     axum::http::StatusCode::CREATED,
@@ -515,17 +528,19 @@ mod tests {
                         // The finalize must carry a REAL DER CSR.
                         let jws: serde_json::Value = serde_json::from_str(&body).unwrap();
                         let payload_b64 = jws["payload"].as_str().unwrap();
-                        let payload_raw =
-                            base64::engine::general_purpose::URL_SAFE_NO_PAD
-                                .decode(payload_b64)
-                                .unwrap();
+                        let payload_raw = base64::engine::general_purpose::URL_SAFE_NO_PAD
+                            .decode(payload_b64)
+                            .unwrap();
                         let payload: serde_json::Value =
                             serde_json::from_slice(&payload_raw).unwrap();
                         let csr_b64 = payload["csr"].as_str().unwrap();
                         let csr_der = base64::engine::general_purpose::URL_SAFE_NO_PAD
                             .decode(csr_b64)
                             .unwrap();
-                        assert!(csr_der.len() > 100, "real CSR DER, not a placeholder string");
+                        assert!(
+                            csr_der.len() > 100,
+                            "real CSR DER, not a placeholder string"
+                        );
                         axum::Json(serde_json::json!({
                             "status": "processing",
                         }))
@@ -564,13 +579,14 @@ mod tests {
             let client = UpstreamClient::new(&config).unwrap();
 
             // Full external-order round trip.
-            let (order, token_out, challenge_out) =
-                client.new_order("example.dev").await.unwrap();
+            let (order, token_out, challenge_out) = client.new_order("example.dev").await.unwrap();
             assert_eq!(token_out, "mock-http01-token");
             assert_eq!(challenge_out, format!("{base}/challenge/1"));
             // The http-01 key authorization is captured and servable.
             let captured = client.challenge_tokens.read().await.clone();
-            let ka = captured.get("mock-http01-token").expect("captured key auth");
+            let ka = captured
+                .get("mock-http01-token")
+                .expect("captured key auth");
             assert!(ka.starts_with("mock-http01-token."));
             assert_eq!(ka.split('.').count(), 2);
 
@@ -579,7 +595,10 @@ mod tests {
             assert_eq!(order.status, "processing");
             let order = client.poll_order(&order).await.unwrap();
             assert_eq!(order.status, "valid");
-            assert_eq!(order.certificate.as_deref(), Some(format!("{base}/cert/1").as_str()));
+            assert_eq!(
+                order.certificate.as_deref(),
+                Some(format!("{base}/cert/1").as_str())
+            );
             let cert = client
                 .download_cert(order.certificate.as_deref().unwrap())
                 .await
@@ -611,6 +630,9 @@ mod tests {
         use sha2::Digest;
         let thumbprint = sentin8_acme_server::upstream::jwk_thumbprint(key);
         let digest = sha2::Sha256::digest(thumbprint.as_bytes());
-        format!("{token}.{}", base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(digest))
+        format!(
+            "{token}.{}",
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(digest)
+        )
     }
 }

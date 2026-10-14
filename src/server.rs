@@ -309,10 +309,10 @@ pub async fn serve(config: AcmeConfig) -> anyhow::Result<()> {
     {
         let relay_pool = pool.clone();
         let derived = sentin8::config::Sentin8Config::from_env();
-        let bus_url = std::env::var("SENTIN8_BUS_URL")
-            .unwrap_or_else(|_| derived.sentin8_bus_url());
-        let auth_issuer = std::env::var("SENTIN8_AUTH_ISSUER")
-            .unwrap_or_else(|_| derived.sentin8_auth_issuer());
+        let bus_url =
+            std::env::var("SENTIN8_BUS_URL").unwrap_or_else(|_| derived.sentin8_bus_url());
+        let auth_issuer =
+            std::env::var("SENTIN8_AUTH_ISSUER").unwrap_or_else(|_| derived.sentin8_auth_issuer());
         tokio::spawn(async move {
             // auth DESIGN §4.3f: the `sentin8:acme`
             // CERTIFICATE is the identity — mint retries while the fleet

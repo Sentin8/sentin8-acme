@@ -40,8 +40,8 @@ use crate::config::AcmeConfig;
 /// DB/Valkey/auth URLs) are inert placeholders — this mode touches no
 /// network and no database, so they are never read.
 pub fn offline_config() -> AcmeConfig {
-    let data_dir = std::env::var("SENTIN8_ACME_DATA_DIR")
-        .unwrap_or_else(|_| sentin8::config::tls_dir());
+    let data_dir =
+        std::env::var("SENTIN8_ACME_DATA_DIR").unwrap_or_else(|_| sentin8::config::tls_dir());
     AcmeConfig {
         port: 0,
         data_dir: PathBuf::from(data_dir),
@@ -52,8 +52,7 @@ pub fn offline_config() -> AcmeConfig {
             .and_then(|v| v.parse().ok())
             .unwrap_or(90),
         install_trust_store: false,
-        sentin8_domain: std::env::var("SENTIN8_DOMAIN")
-            .unwrap_or_else(|_| "sentin8.local".into()),
+        sentin8_domain: std::env::var("SENTIN8_DOMAIN").unwrap_or_else(|_| "sentin8.local".into()),
         upstream_directory_url: String::new(),
         upstream_contact: String::new(),
         upstream_ca_pem: String::new(),
@@ -74,8 +73,8 @@ pub fn offline_config() -> AcmeConfig {
 /// Lives under the secrets tree next to the m2m identity dir — the same
 /// `.run/secrets` the operator already owns.
 fn infra_tls_dir() -> PathBuf {
-    let secrets = std::env::var("SENTIN8_SECRETS_DIR")
-        .unwrap_or_else(|_| "../.run/secrets".to_string());
+    let secrets =
+        std::env::var("SENTIN8_SECRETS_DIR").unwrap_or_else(|_| "../.run/secrets".to_string());
     Path::new(&secrets).join("infra-tls")
 }
 
@@ -109,7 +108,10 @@ pub fn ensure_infra_tls(
     // root-only file cannot chain them. The copy lives under the secrets
     // tree so the container never sees the Acme data dir (which holds the
     // CA PRIVATE keys).
-    let ca_dir = dir.parent().map(|p| p.join("acme-ca")).unwrap_or_else(|| dir.join("acme-ca"));
+    let ca_dir = dir
+        .parent()
+        .map(|p| p.join("acme-ca"))
+        .unwrap_or_else(|| dir.join("acme-ca"));
     std::fs::create_dir_all(&ca_dir).map_err(|e| format!("create {}: {e}", ca_dir.display()))?;
     let root_ca_src = config.root_ca_cert_path();
     let int_ca_src = config.intermediate_ca_cert_path();
@@ -126,7 +128,11 @@ pub fn ensure_infra_tls(
             &dir,
             "valkey-server",
             "infra-valkey",
-            &["localhost".to_string(), "127.0.0.1".to_string(), "::1".to_string()],
+            &[
+                "localhost".to_string(),
+                "127.0.0.1".to_string(),
+                "::1".to_string(),
+            ],
         )?,
         control_cert: ensure_client_leaf(config, &dir, "valkey-control", "m2m-valkey-control")?,
         admin_cert: ensure_client_leaf(config, &dir, "valkey-admin", "m2m-valkey-admin")?,
@@ -148,7 +154,11 @@ pub fn ensure_infra_tls(
             &dir,
             "postgres-server",
             "infra-postgres",
-            &["localhost".to_string(), "127.0.0.1".to_string(), "::1".to_string()],
+            &[
+                "localhost".to_string(),
+                "127.0.0.1".to_string(),
+                "::1".to_string(),
+            ],
         )?,
         postgres_ops_cert: ensure_client_leaf(config, &dir, "postgres-ops", "m2m-postgres-ops")?,
         // The TLS-only HBA + the identity map seed. Enroll appends the
@@ -250,8 +260,10 @@ fn ensure_leaf(
     }
     let ca = CaHierarchy::ensure(config)?;
     let (cert_pem, key_pem) = ca.sign_leaf(cn, sans, config.leaf_cert_days)?;
-    std::fs::write(&cert_path, &cert_pem).map_err(|e| format!("write {}: {e}", cert_path.display()))?;
-    std::fs::write(&key_path, &key_pem).map_err(|e| format!("write {}: {e}", key_path.display()))?;
+    std::fs::write(&cert_path, &cert_pem)
+        .map_err(|e| format!("write {}: {e}", cert_path.display()))?;
+    std::fs::write(&key_path, &key_pem)
+        .map_err(|e| format!("write {}: {e}", key_path.display()))?;
     set_owner_only(&cert_path)?;
     set_owner_only(&key_path)?;
     Ok((cert_path, true))
@@ -277,8 +289,10 @@ fn ensure_client_leaf(
     }
     let ca = CaHierarchy::ensure(config)?;
     let (cert_pem, key_pem) = ca.sign_client_leaf(cn, config.leaf_cert_days)?;
-    std::fs::write(&cert_path, &cert_pem).map_err(|e| format!("write {}: {e}", cert_path.display()))?;
-    std::fs::write(&key_path, &key_pem).map_err(|e| format!("write {}: {e}", key_path.display()))?;
+    std::fs::write(&cert_path, &cert_pem)
+        .map_err(|e| format!("write {}: {e}", cert_path.display()))?;
+    std::fs::write(&key_path, &key_pem)
+        .map_err(|e| format!("write {}: {e}", key_path.display()))?;
     set_owner_only(&cert_path)?;
     set_owner_only(&key_path)?;
     Ok((cert_path, true))

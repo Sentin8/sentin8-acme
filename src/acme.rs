@@ -1247,7 +1247,7 @@ async fn relay_finalize_order(
     let relay: RelayState = match parsed
         .get("upstream")
         .cloned()
-        .map(|v| serde_json::from_value(v))
+        .map(serde_json::from_value)
         .transpose()
         .ok()
         .flatten()
@@ -1269,24 +1269,23 @@ async fn relay_finalize_order(
         .unwrap_or_default();
 
     // Finalize with a real CSR; persist the CSR key alongside the account.
-    let (upstream_order, csr_key_pem) =
-        match state.upstream.finalize(&relay.order, &domain).await {
-            Ok(t) => t,
-            Err(crate::upstream::UpstreamError::Rejected(detail)) => {
-                state.upstream.forget_token(&relay.token).await;
-                return (StatusCode::BAD_REQUEST, detail).into_response()
-            }
-            Err(crate::upstream::UpstreamError::Unreachable(detail)) => {
-                return (StatusCode::BAD_GATEWAY, detail).into_response()
-            }
-        };
+    let (upstream_order, csr_key_pem) = match state.upstream.finalize(&relay.order, &domain).await {
+        Ok(t) => t,
+        Err(crate::upstream::UpstreamError::Rejected(detail)) => {
+            state.upstream.forget_token(&relay.token).await;
+            return (StatusCode::BAD_REQUEST, detail).into_response();
+        }
+        Err(crate::upstream::UpstreamError::Unreachable(detail)) => {
+            return (StatusCode::BAD_GATEWAY, detail).into_response()
+        }
+    };
 
     // Poll until the upstream validates the http-01 challenge and signs.
     let upstream_order = match state.upstream.poll_order(&upstream_order).await {
         Ok(o) => o,
         Err(crate::upstream::UpstreamError::Rejected(detail)) => {
             state.upstream.forget_token(&relay.token).await;
-            return (StatusCode::BAD_REQUEST, detail).into_response()
+            return (StatusCode::BAD_REQUEST, detail).into_response();
         }
         Err(crate::upstream::UpstreamError::Unreachable(detail)) => {
             return (StatusCode::BAD_GATEWAY, detail).into_response()
@@ -1390,9 +1389,14 @@ pub async fn serve_challenge_token(
 /// that silently dropped on Bus unavailability.
 async fn emit_event(state: &AppState, event_type: &str, payload: serde_json::Value) {
     let env_id = sentin8::config::SYSTEM_ENV_ID;
-    if let Err(e) =
-        sentin8::bus::outbox::insert_outbox_row_pool(&state.pool, env_id, "acme", event_type, &payload)
-            .await
+    if let Err(e) = sentin8::bus::outbox::insert_outbox_row_pool(
+        &state.pool,
+        env_id,
+        "acme",
+        event_type,
+        &payload,
+    )
+    .await
     {
         tracing::warn!(error = ?e, event_type = %event_type, "acme: failed to insert outbox event");
     }
@@ -1501,7 +1505,7 @@ pub async fn sweep(state: &AppState) -> usize {
                 mark_revoked(&state.config.cert_dir(old_serial), now);
             }
             emit_event(
-                &state,
+                state,
                 "sentin8:acme:certificate:renewed",
                 serde_json::json!({
                     "domain": domain, "old_cert_id": metadata.get("serial"),

@@ -446,7 +446,7 @@ fn parse_asn1_time(tag: u8, body: &[u8]) -> Option<DateTime<Utc>> {
 }
 
 /// Safe substring helper for fixed-width time fields.
-fn rstr<'a>(s: &'a str, r: std::ops::Range<usize>) -> &'a str {
+fn rstr(s: &str, r: std::ops::Range<usize>) -> &str {
     s.get(r).unwrap_or("")
 }
 
@@ -477,8 +477,8 @@ mod tests {
         let der = [
             0x30u8, 0x20, // SEQUENCE (noise)
             0x17, 13, // UTCTime NotBefore
-            b'2', b'6', b'1', b'0', b'0', b'7', b'0', b'7', b'3', b'5', b'5', b'3', b'Z',
-            0x17, 13, // UTCTime NotAfter
+            b'2', b'6', b'1', b'0', b'0', b'7', b'0', b'7', b'3', b'5', b'5', b'3', b'Z', 0x17,
+            13, // UTCTime NotAfter
             b'2', b'7', b'0', b'1', b'0', b'5', b'0', b'7', b'3', b'5', b'5', b'3', b'Z',
         ];
         let dt = der_not_after(&der).expect("validity pair");

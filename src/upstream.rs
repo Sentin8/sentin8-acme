@@ -362,14 +362,19 @@ impl UpstreamClient {
                         "badNonce persisted after replay".into(),
                     ));
                 }
-                return Err(UpstreamError::Rejected(format!("{status}: {}", short(&text))));
+                return Err(UpstreamError::Rejected(format!(
+                    "{status}: {}",
+                    short(&text)
+                )));
             }
             if let Some(n) = header(&resp, "Replay-Nonce") {
                 *self.nonce.write().await = Some(n.to_string());
             }
             return Ok(resp);
         }
-        Err(UpstreamError::Unreachable("post_kid: unreachable retry loop".into()))
+        Err(UpstreamError::Unreachable(
+            "post_kid: unreachable retry loop".into(),
+        ))
     }
 
     /// Submit a newOrder for the identifier. On success the http-01 key
@@ -555,14 +560,14 @@ impl UpstreamClient {
                 .map(|s| s.to_string());
             match new_order.status.as_str() {
                 "valid" => return Ok(new_order),
-                "invalid" => {
-                    return Err(UpstreamError::Rejected("upstream order invalid".into()))
-                }
+                "invalid" => return Err(UpstreamError::Rejected("upstream order invalid".into())),
                 _ => {}
             }
             tokio::time::sleep(std::time::Duration::from_millis(500)).await;
         }
-        Err(UpstreamError::Unreachable("poll: exhausted attempts".into()))
+        Err(UpstreamError::Unreachable(
+            "poll: exhausted attempts".into(),
+        ))
     }
 
     /// Download the certificate chain (POST-as-GET, RFC 8555 §6.3); the

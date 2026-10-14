@@ -59,34 +59,58 @@ async fn main() -> anyhow::Result<()> {
                 println!(
                     "infra TLS: valkey server leaf {} ({})",
                     server.display(),
-                    if *server_minted { "minted" } else { "valid — reused" }
+                    if *server_minted {
+                        "minted"
+                    } else {
+                        "valid — reused"
+                    }
                 );
                 println!(
                     "infra TLS: local control pair {} ({})",
                     control.display(),
-                    if *control_minted { "minted" } else { "valid — reused" }
+                    if *control_minted {
+                        "minted"
+                    } else {
+                        "valid — reused"
+                    }
                 );
                 println!(
                     "infra TLS: operator admin pair {} ({})",
                     admin.display(),
-                    if *admin_minted { "minted" } else { "valid — reused" }
+                    if *admin_minted {
+                        "minted"
+                    } else {
+                        "valid — reused"
+                    }
                 );
                 println!(
                     "infra TLS: registry-writer pair {} ({})",
                     writer.display(),
-                    if *writer_minted { "minted" } else { "valid — reused" }
+                    if *writer_minted {
+                        "minted"
+                    } else {
+                        "valid — reused"
+                    }
                 );
                 let (pg_server, pg_server_minted) = &report.postgres_server_cert;
                 let (pg_ops, pg_ops_minted) = &report.postgres_ops_cert;
                 println!(
                     "infra TLS: postgres server leaf {} ({})",
                     pg_server.display(),
-                    if *pg_server_minted { "minted" } else { "valid — reused" }
+                    if *pg_server_minted {
+                        "minted"
+                    } else {
+                        "valid — reused"
+                    }
                 );
                 println!(
                     "infra TLS: postgres operator pair {} ({})",
                     pg_ops.display(),
-                    if *pg_ops_minted { "minted" } else { "valid — reused" }
+                    if *pg_ops_minted {
+                        "minted"
+                    } else {
+                        "valid — reused"
+                    }
                 );
                 println!(
                     "infra TLS: pg_hba.conf seed {} / pg_ident.conf seed {}",
@@ -96,12 +120,20 @@ async fn main() -> anyhow::Result<()> {
                 println!(
                     "infra TLS: captain identity {} ({})",
                     captain.display(),
-                    if *captain_minted { "minted" } else { "valid — reused" }
+                    if *captain_minted {
+                        "minted"
+                    } else {
+                        "valid — reused"
+                    }
                 );
                 for (workload, minted) in &report.minted_workloads {
                     println!(
                         "infra TLS: workload '{workload}' pre-minted ({})",
-                        if *minted { "minted" } else { "valid — reused" }
+                        if *minted {
+                            "minted"
+                        } else {
+                            "valid — reused"
+                        }
                     );
                 }
                 return Ok(());
@@ -129,7 +161,7 @@ async fn main() -> anyhow::Result<()> {
         std::env::var("VALKEY_URL")
             .ok()
             .filter(|s| !s.trim().is_empty())
-            .unwrap_or_else(|| sentin8::config::service_valkey_url()),
+            .unwrap_or_else(sentin8::config::service_valkey_url),
         "sentin8:acme",
     );
 

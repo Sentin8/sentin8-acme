@@ -63,16 +63,13 @@ pub struct MintLimiter {
 /// Which endpoints count as mints.
 fn is_mint_path(path: &str) -> bool {
     path == "/acme/new-order"
-        || path.starts_with("/acme/order/")
-        && path.ends_with("/finalize")
+        || path.starts_with("/acme/order/") && path.ends_with("/finalize")
         || path == "/v1/client-cert"
 }
 
 /// Is this path exempt from shedding (health + public cert reads)?
 fn is_exempt_path(path: &str) -> bool {
-    path == "/v1/health"
-        || path.starts_with("/v1/ca/")
-        || path.starts_with("/acme/cert/")
+    path == "/v1/health" || path.starts_with("/v1/ca/") || path.starts_with("/acme/cert/")
 }
 
 impl MintLimiter {
@@ -88,7 +85,8 @@ impl MintLimiter {
         if self.queued.load(std::sync::atomic::Ordering::SeqCst) >= MAX_QUEUED_MINTS {
             return Err(());
         }
-        self.queued.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.queued
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Ok(())
     }
 

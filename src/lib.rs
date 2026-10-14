@@ -27,18 +27,18 @@ pub mod infra_tls;
 pub mod openapi;
 /// Shield (Sentin8:Policy) integration — shared bridge re-exports.
 pub mod policy;
-/// Upstream ACME relay — RFC 8555 client for external domains (DEVDOM-2).
-pub mod upstream;
 /// Service self-registration declarations.
 pub mod registration;
-/// Mint admission control — bounded queue + load shed (ACME-PREF).
-pub mod shed;
 /// Axum router and server entry points.
 pub mod server;
+/// Mint admission control — bounded queue + load shed (ACME-PREF).
+pub mod shed;
 /// Shared application state.
 pub mod state;
 /// OS and Chromium/NSS trust-store installation.
 pub mod truststore;
+/// Upstream ACME relay — RFC 8555 client for external domains (DEVDOM-2).
+pub mod upstream;
 
 /// Serve the ACME certificate authority.
 pub use server::serve;
