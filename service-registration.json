@@ -1,0 +1,10 @@
+{
+  "vertical": "sentin8",
+  "services": [
+    {
+      "service_type": "sentin8:acme",
+      "subdomain": "acme",
+      "binary": "sentin8-acme"
+    }
+  ]
+}
