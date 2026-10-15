@@ -125,13 +125,17 @@ mod tests {
         // Operator-declared local suffixes (DEVDOM-1).
         assert!(acme::is_local_domain(
             "bus.ops.sys.local.sentin8.dev",
-            &["local.sentin8.dev".to_string(),
-                "local.ibank.dev".to_string()]
+            &[
+                "local.sentin8.dev".to_string(),
+                "local.ibank.dev".to_string()
+            ]
         ));
         assert!(acme::is_local_domain(
             "bff.prod.ibank.local.ibank.dev",
-            &["local.sentin8.dev".to_string(),
-                "local.ibank.dev".to_string()]
+            &[
+                "local.sentin8.dev".to_string(),
+                "local.ibank.dev".to_string()
+            ]
         ));
         // Exact-suffix match, not substring.
         assert!(!acme::is_local_domain(
@@ -146,10 +150,7 @@ mod tests {
         assert!(!acme::is_local_domain("myorg.com", &local));
         // An empty suffix list still admits the builtin local forms.
         assert!(acme::is_local_domain("localhost", &[]));
-        assert!(!acme::is_local_domain(
-            "bus.ops.sys.local.sentin8.dev",
-            &[]
-        ));
+        assert!(!acme::is_local_domain("bus.ops.sys.local.sentin8.dev", &[]));
     }
 
     // ── Story 22.20.6 — Admin UI tests ──────────────────────────────────
