@@ -4,7 +4,11 @@
     {
       "service_type": "sentin8:acme",
       "subdomain": "acme",
-      "binary": "sentin8-acme"
+      "binary": "sentin8-acme",
+      "telemetry_property": {
+        "slug": "acme",
+        "name": "Sentin8:Acme Platform Telemetry"
+      }
     }
   ]
 }
