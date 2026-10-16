@@ -289,6 +289,10 @@ fn ensure_client_leaf(
     }
     let ca = CaHierarchy::ensure(config)?;
     let (cert_pem, key_pem) = ca.sign_client_leaf(cn, config.leaf_cert_days)?;
+    // The identity dir may not exist on a fresh tree (`.run` is
+    // gitignored and fully disposable — a wholesale delete must not
+    // break re-materialization).
+    std::fs::create_dir_all(dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
     std::fs::write(&cert_path, &cert_pem)
         .map_err(|e| format!("write {}: {e}", cert_path.display()))?;
     std::fs::write(&key_path, &key_pem)
