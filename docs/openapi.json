@@ -1,0 +1,64 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "sentin8-acme",
+    "description": "Sentin8 Sentin8:Acme — internal ACME certificate authority server.",
+    "license": {
+      "name": "MIT OR Apache-2.0",
+      "identifier": "MIT OR Apache-2.0"
+    },
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/v1/ca/intermediate.crt": {
+      "get": {
+        "tags": [
+          "acme"
+        ],
+        "summary": "`GET /v1/ca/intermediate.crt` — download the Intermediate CA certificate.",
+        "operationId": "ca.intermediate",
+        "responses": {
+          "200": {
+            "description": "Intermediate CA PEM",
+            "content": {
+              "application/x-pem-file": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/ca/root.crt": {
+      "get": {
+        "tags": [
+          "acme"
+        ],
+        "summary": "`GET /v1/ca/root.crt` — download the Root CA certificate.",
+        "operationId": "ca.root",
+        "responses": {
+          "200": {
+            "description": "Root CA PEM",
+            "content": {
+              "application/x-pem-file": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {},
+  "security": [],
+  "tags": [
+    {
+      "name": "acme",
+      "description": "Sentin8:Acme — CA certificate download"
+    }
+  ]
+}
