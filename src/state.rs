@@ -56,16 +56,18 @@ impl AppState {
         engine: Option<std::sync::Arc<crate::policy::Engine>>,
     ) -> Self {
         // The issuer base URL is used to build authz, finalize, and cert
-        // URLs in order/finalize responses. It must use the ACME server's
-        // SNI hostname (not `localhost`) so that clients using `.resolve()`
-        // to pin the IP while sending the SNI hostname can follow the URLs
-        // without hitting a different host. The directory handler still
-        // derives URLs from the request's Host header (auto-scale friendly);
-        // this is the fallback for order/finalize handlers that don't have
-        // access to the request.
+        // URLs in account/order responses. It is the DERIVED platform
+        // service base (DESIGN §2, ACMEURL-1) — port-free: in-fleet
+        // consumers (the sentin8-tls on-demand resolver) pin the
+        // discovered instance address with reqwest's `.resolve()`, where
+        // a port inside the URL would override the pin and strand the
+        // fetch on a respawned instance's old port. The directory
+        // handler derives its URLs from the request's Host header
+        // (auto-scale friendly); this base serves the handlers that do
+        // not see the request.
         let issuer = format!(
-            "https://acme.ops.sys.{}:{}",
-            config.sentin8_domain, config.port
+            "https://{}",
+            sentin8::config::Sentin8Config::from_env().platform_domain("sentin8:acme")
         );
         let policy = engine
             .unwrap_or_else(|| std::sync::Arc::new(crate::policy::Engine::new("sentin8:acme")));

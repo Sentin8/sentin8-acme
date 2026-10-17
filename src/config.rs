@@ -99,10 +99,15 @@ impl AcmeConfig {
                 .map(|s| s.trim().to_ascii_lowercase())
                 .filter(|s| !s.is_empty())
                 .collect(),
+            // DSNDERIVE-1 (DESIGN §3): explicit override → else the
+            // DERIVED identity DSN. The legacy operator `DATABASE_URL` is
+            // NEVER a fallback: under the superuser role the unqualified
+            // outbox INSERT resolves through the operator search_path
+            // (`auth, sys, …`) and lands in another service's
+            // `auth.outbox` (DESIGN §8 invariant 7 — no silent shared-role
+            // fallback).
             database_url: env::var("SENTIN8_ACME_DATABASE_URL").unwrap_or_else(|_| {
-                env::var("DATABASE_URL").unwrap_or_else(|_| {
-                    sentin8::config::Sentin8Config::default_database_url().to_string()
-                })
+                sentin8::config::service_database_url("sentin8:acme")
             }),
             sentin8_bus_url: env::var("SENTIN8_BUS_URL")
                 .unwrap_or_else(|_| sentin8::config::Sentin8Config::from_env().sentin8_bus_url()),
