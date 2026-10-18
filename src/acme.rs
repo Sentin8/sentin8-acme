@@ -29,6 +29,14 @@ use crate::state::AppState;
 ///
 /// URLs are derived from the incoming request's scheme and Host header so
 /// they remain correct on any port or replica (auto-scale friendly).
+#[utoipa::path(
+    get,
+    path = "/acme/directory",
+    responses(
+        (status = 200, description = "RFC 8555 directory (resource URLs resolved from the request Host)", body = serde_json::Value),
+    ),
+    security(),
+)]
 pub async fn directory_handler(
     State(state): State<Arc<AppState>>,
     request: axum::extract::Request,
@@ -100,6 +108,16 @@ pub struct NewAccountRequest {
 /// `POST /acme/new-account` — register a new ACME account (RFC 8555 §7.1.2),
 /// persisted to the accounts directory and announced as
 /// `sentin8:acme:account:created`.
+#[utoipa::path(
+    post,
+    path = "/acme/new-account",
+    responses(
+        (status = 201, description = "Account created/updated (JWS-verified)"),
+        (status = 400, description = "Malformed JWS"),
+        (status = 403, description = "Rejected identifier policy"),
+    ),
+    security(),
+)]
 pub async fn new_account(
     State(state): State<Arc<AppState>>,
     Json(req): Json<NewAccountRequest>,
@@ -217,6 +235,16 @@ pub struct OrderRecord {
 /// Mixed local/external identifiers are rejected; external orders are
 /// proxied to the upstream ACME provider when proxy mode is enabled,
 /// otherwise the local CA issues them after challenge validation.
+#[utoipa::path(
+    post,
+    path = "/acme/new-order",
+    responses(
+        (status = 201, description = "Order created (authorizations + finalize URLs; locally-signed or relayed upstream)", body = serde_json::Value),
+        (status = 400, description = "Unsupported/forbidden identifier"),
+        (status = 403, description = "Local-domain without proxy mode, or relay proxy off"),
+    ),
+    security(),
+)]
 pub async fn new_order(
     State(state): State<Arc<AppState>>,
     Json(req): Json<NewOrderRequest>,
@@ -383,6 +411,16 @@ pub struct ChallengeRecord {
 }
 
 /// `GET /acme/authz/{id}` — fetch an authorization (RFC 8555 §7.1.4).
+#[utoipa::path(
+    get,
+    path = "/acme/authz/{id}",
+    params(("id" = String, Path, description = "Authorization id")),
+    responses(
+        (status = 200, description = "Authorization challenges (RFC 8555 §7.1.4)"),
+        (status = 404, description = "Unknown authorization"),
+    ),
+    security(),
+)]
 pub async fn get_authz(
     State(state): State<Arc<AppState>>,
     AxumPath(authz_id): AxumPath<String>,
@@ -408,6 +446,17 @@ pub async fn get_authz(
 /// orders notify the upstream CA that its http-01 challenge is ready —
 /// the upstream then fetches the key authorization from the proxy's
 /// :80 listener → acme's well-known route (DESIGN §4.2/§4.3).
+#[utoipa::path(
+    post,
+    path = "/acme/challenge/{id}",
+    params(("id" = String, Path, description = "Challenge id")),
+    responses(
+        (status = 200, description = "Challenge marked ready (proxy mode: notifies the upstream)"),
+        (status = 404, description = "Unknown challenge"),
+        (status = 409, description = "Challenge not pending"),
+    ),
+    security(),
+)]
 pub async fn challenge_ready(
     State(state): State<Arc<AppState>>,
     AxumPath(challenge_id): AxumPath<String>,
@@ -516,6 +565,18 @@ pub struct FinalizeRequest {
 /// an order that never proved control is never signed) and are signed
 /// by the Intermediate CA; external orders are finalized upstream
 /// through the relay and the certificate cached (DESIGN §4.2).
+#[utoipa::path(
+    post,
+    path = "/acme/order/{id}/finalize",
+    params(("id" = String, Path, description = "Order id")),
+    responses(
+        (status = 200, description = "Order finalized (CSR processed; platform-CA or upstream-signed chain)"),
+        (status = 400, description = "Invalid CSR"),
+        (status = 404, description = "Unknown order"),
+        (status = 409, description = "Order not in ready state"),
+    ),
+    security(),
+)]
 pub async fn finalize_order(
     State(state): State<Arc<AppState>>,
     AxumPath(order_id): AxumPath<String>,
@@ -660,6 +721,16 @@ pub async fn finalize_order(
 /// `GET /acme/cert/{id}` — download the certificate as a combined PEM
 /// (chain, plus the private key for locally-issued certs so TLS can build
 /// its `ServerConfig` from one artifact).
+#[utoipa::path(
+    get,
+    path = "/acme/cert/{id}",
+    params(("id" = String, Path, description = "Certificate cache id")),
+    responses(
+        (status = 200, description = "Certificate (chain; + private key for locally-issued certs)"),
+        (status = 404, description = "Unknown certificate"),
+    ),
+    security(),
+)]
 pub async fn get_cert(
     State(state): State<Arc<AppState>>,
     AxumPath(cert_id): AxumPath<String>,
@@ -703,6 +774,16 @@ pub async fn get_cert(
 // ── Order status ───────────────────────────────────────────────────────
 
 /// `GET /acme/order/{id}` — fetch the order status.
+#[utoipa::path(
+    get,
+    path = "/acme/order/{id}",
+    params(("id" = String, Path, description = "Order id")),
+    responses(
+        (status = 200, description = "Order status (pending → ready → valid)"),
+        (status = 404, description = "Unknown order"),
+    ),
+    security(),
+)]
 pub async fn get_order(
     State(state): State<Arc<AppState>>,
     AxumPath(order_id): AxumPath<String>,
@@ -718,6 +799,15 @@ pub async fn get_order(
 
 /// `POST /acme/revoke-cert` — revoke a certificate (RFC 8555 §7.6),
 /// marking its metadata and announcing `sentin8:acme:certificate:revoked`.
+#[utoipa::path(
+    post,
+    path = "/acme/revoke-cert",
+    responses(
+        (status = 200, description = "Certificate revoked (metadata flag / upstream relay)"),
+        (status = 400, description = "Malformed revocation request"),
+    ),
+    security(),
+)]
 pub async fn revoke_cert(
     State(state): State<Arc<AppState>>,
     Json(_req): Json<serde_json::Value>,
@@ -1365,6 +1455,16 @@ async fn relay_finalize_order(
 /// :80 listener forwards here; the bounded map holds only tokens captured
 /// for in-flight external orders. Unauthenticated by design (RFC 8555
 /// §8.1) — the token itself is the capability.
+#[utoipa::path(
+    get,
+    path = "/.well-known/acme-challenge/{token}",
+    params(("token" = String, Path, description = "Challenge token")),
+    responses(
+        (status = 200, description = "The key authorization (application/jose+json, upstream orders)"),
+        (status = 404, description = "Unknown token / local order"),
+    ),
+    security(),
+)]
 pub async fn serve_challenge_token(
     State(state): State<Arc<AppState>>,
     AxumPath(token): AxumPath<String>,
@@ -1416,7 +1516,7 @@ async fn emit_event(state: &AppState, event_type: &str, payload: serde_json::Val
     path = "/v1/internal/schedules/run",
     request_body = serde_json::Value,
     responses((status = 200, description = "Renewal sweep completed")),
-    tag = "acme",
+    security(),
 )]
 pub async fn internal_schedules_run(
     State(state): State<Arc<AppState>>,

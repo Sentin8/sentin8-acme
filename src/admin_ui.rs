@@ -33,6 +33,18 @@ use crate::state::AppState;
 ///   - `overview`      — CA hierarchy status, issued-cert count, active order count, proxy mode
 ///   - `certificates`  — issued-certificate inventory (domain, issued_at, expires_at, serial, revoked)
 ///   - `settings`      — Sentin8:Acme settings (upstream provider URL, leaf cert validity, trust-store)
+#[utoipa::path(
+    get,
+    path = "/v1/admin/ui/{page}",
+    params(("page" = String, Path, description = "RFW page name (overview, certificates, settings)")),
+    responses(
+        (status = 200, description = "RFW page definition (rendered by Sentin8:Dash)", body = serde_json::Value),
+        (status = 403, description = "Caller lacks an acme read/admin scope"),
+        (status = 404, description = "Unknown page"),
+    ),
+    security(("sentin8:acme:admin" = [])),
+    tag = "admin-ui",
+)]
 pub async fn get_admin_ui(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -138,6 +150,20 @@ pub async fn get_admin_ui(
 ///   - `overview`     — summary cards (CA status, counts)
 ///   - `certificates` — issued-certificate inventory from the CA data directory
 ///   - `settings`    — current config values
+#[utoipa::path(
+    get,
+    path = "/v1/admin/{resource}",
+    params(
+        ("resource" = String, Path, description = "Admin data resource"),
+    ),
+    responses(
+        (status = 200, description = "The resource's rows for the RFW table", body = serde_json::Value),
+        (status = 403, description = "Caller lacks an acme read/admin scope"),
+        (status = 404, description = "Unknown resource"),
+    ),
+    security(("sentin8:acme:admin" = [])),
+    tag = "admin-ui",
+)]
 pub async fn get_admin_data(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -176,6 +202,18 @@ pub async fn get_admin_data(
 ///
 /// Delegates to the existing `acme::revoke_cert` flow (updates metadata,
 /// publishes CRL). Returns an RFW redirect to the certificates page.
+#[utoipa::path(
+    post,
+    path = "/v1/admin/certificates/{id}/revoke",
+    params(("id" = String, Path, description = "Certificate cache id")),
+    responses(
+        (status = 200, description = "Certificate revoked (RFW redirect to the certificates page)", body = serde_json::Value),
+        (status = 403, description = "Shield deny"),
+        (status = 404, description = "Unknown certificate"),
+    ),
+    security(),
+    tag = "admin-ui",
+)]
 pub async fn revoke_certificate(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,

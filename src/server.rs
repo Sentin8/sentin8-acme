@@ -174,7 +174,17 @@ pub fn build_router_with_openapi(
     ))
 }
 
-async fn health() -> impl axum::response::IntoResponse {
+/// Liveness (captain monitor payload).
+#[utoipa::path(
+    get,
+    path = "/v1/health",
+    responses(
+        (status = 200, description = "The service is live", body = serde_json::Value),
+    ),
+    security(),
+    tag = "meta",
+)]
+pub async fn health() -> impl axum::response::IntoResponse {
     axum::Json(
         serde_json::json!({"status": "ok", "version": sentin8::build_info::id(), "build": sentin8::build_info::build_hash()}),
     )
