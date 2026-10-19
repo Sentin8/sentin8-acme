@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright Contributors to the Sentin8:Acme
 // SPDX-License-Identifier: Apache-2.0
 
-//! Certificate-mint admission control — bounded queue with load shed
+//! Certificate-mint admission control - bounded queue with load shed
 //! (ACME-PREF, acme DESIGN §6).
 //!
 //! A fleet-wide cold start re-dials EVERY service's cert fetch at once;
@@ -15,11 +15,11 @@
 //! probe watchdog mass-killed the victims. The shed answers the
 //! overload question UP FRONT with a clear `503 Service Busy +
 //! Retry-After`, which the sentin8-tls fetcher treats as a
-//! deterministic retryable failure (backoff) — never a silent timeout.
+//! deterministic retryable failure (backoff) - never a silent timeout.
 //!
 //! Concurrency is bounded per MINT ENDPOINT GROUP (
 //! `/acme/new-order`, `/acme/order/{id}/finalize`, `/v1/client-cert`),
-//! not per route — one total budget that the heaviest paths share, so
+//! not per route - one total budget that the heaviest paths share, so
 //! a `/client-cert` enrollment storm cannot starve server-cert mints
 //! and vice versa. Health, CA downloads (`/v1/ca/*.crt`), and cert
 //! downloads are never shed: they are cheap reads, and killing them
@@ -40,7 +40,7 @@ use axum::response::{IntoResponse, Response};
 pub const MAX_CONCURRENT_MINTS: u64 = 16;
 
 /// Queued (admitted but still waiting on the semaphore) beyond which
-/// the shed starts refusing — the point where a caller's total mint
+/// the shed starts refusing - the point where a caller's total mint
 /// latency (queueing + signing) approaches its 10s request timeout.
 pub const MAX_QUEUED_MINTS: u64 = 32;
 
@@ -75,7 +75,7 @@ fn is_exempt_path(path: &str) -> bool {
 impl MintLimiter {
     /// Try to admit a mint request. Returns `Err(())` when the shed is
     /// active (the caller responds 503). Admitting increments the queue
-    /// gauge — the caller's mid-layer pairs it with [`Self::enter`] once
+    /// gauge - the caller's mid-layer pairs it with [`Self::enter`] once
     /// the handler actually starts, matching the 503-before-queueing
     /// contract in acme DESIGN §6.
     pub fn try_acquire(&self) -> Result<(), ()> {
@@ -140,7 +140,7 @@ pub async fn mint_shed_layer(
             path,
             queued = limiter.queued(),
             in_flight = limiter.in_flight(),
-            "acme: mint shed active — refusing (503 + Retry-After)"
+            "acme: mint shed active - refusing (503 + Retry-After)"
         );
         return (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -148,7 +148,7 @@ pub async fn mint_shed_layer(
                 axum::http::header::RETRY_AFTER,
                 SHED_RETRY_AFTER_S.to_string(),
             )],
-            "acme mint queue full — retry after backoff window",
+            "acme mint queue full - retry after backoff window",
         )
             .into_response();
     }

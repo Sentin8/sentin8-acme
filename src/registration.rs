@@ -18,7 +18,7 @@ use utoipa::OpenApi;
 // plane and cannot fetch an M2M token before it exists, so its role
 // authenticates with SCRAM (platform.sql seeds/converges the password).
 // The role holds no tables; event emission rides the DBX producer path
-// — a LOCAL `acme.outbox` drained to Bus's produce API (RS §3 D1: the
+// - a LOCAL `acme.outbox` drained to Bus's produce API (RS §3 D1: the
 // direct `bus.inbox` INSERT grant is removed; no producer holds grants on
 // Bus's internal durability tables).
 const PG_ROLES: &[PgRole] = &[PgRole {
@@ -27,7 +27,7 @@ sentin8:tls:read",
     role: "sentin8_acme_service",
     bypass_rls: false,
     database: "sentin8",
-    // Bus access rides the PRODUCE API over HTTPS (D1, RS §3) — acme's
+    // Bus access rides the PRODUCE API over HTTPS (D1, RS §3) - acme's
     // local outbox is its only table; no cross-schema grants remain.
     cross_schema_grants: &[],
 }];
@@ -84,7 +84,7 @@ fn openapi_spec() -> serde_json::Value {
 const POLICIES: &[PolicySetDecl] = &[
     PolicySetDecl {
         policy_set_name: "scope-mirror",
-        description: "Action-granular scope permits for sentin8:acme over the LIVE effective scope set. Enforced — step 5 is the only gate.",
+        description: "Action-granular scope permits for sentin8:acme over the LIVE effective scope set. Enforced - step 5 is the only gate.",
         // Actions carry the acme service name (scope convention
         // {vertical}:{service}:{resource}:{action}). The registered admin
         // role is `sentin8:acme:admin`.
@@ -95,7 +95,7 @@ const POLICIES: &[PolicySetDecl] = &[
     },
 ];
 
-/// Default ReBAC relation tuples — none declared by this
+/// Default ReBAC relation tuples - none declared by this
 /// service today; env admins author their own graph via the admin API.
 const RELATIONS: &[RelationDecl] = &[];
 
@@ -104,7 +104,7 @@ const RELATIONS: &[RelationDecl] = &[];
 /// With no `--section` argument, outputs the full registration object.
 /// With `--section=<name>`, outputs only that section as a standalone JSON value.
 /// M2M DCR workload grants: this service's own workload rows, upserted by
-/// `vertical enroll`. DCR is dynamic — this declaration is the ONLY
+/// `vertical enroll`. DCR is dynamic - this declaration is the ONLY
 /// provisioning path (no static auth seed).
 /// Cover BOTH the full-identity `-policy` spelling (policy_bus_client) and
 /// the bare `{short}-policy` spelling (stat_emit); the gate's superset
@@ -132,7 +132,7 @@ const M2M_GRANTS: &[sentin8::registration::M2mGrant] = &[
         workload: "acme-cron",
         scopes: &["sentin8:cron:write"],
     },
-    // TLS-RLS-4 (design/sentin8-vertical-data-plane-contract.md §VDC.7): the database-free HostContextResolver’s resolve workload — cache miss calls Sys `GET /v1/resolve/hostname`.
+    // TLS-RLS-4 (design/sentin8-vertical-data-plane-contract.md §VDC.7): the database-free HostContextResolver’s resolve workload - cache miss calls Sys `GET /v1/resolve/hostname`.
     sentin8::registration::M2mGrant {
         workload: "sentin8-acme-tls",
         scopes: &["sentin8:sys:instances:read"],

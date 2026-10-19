@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright Contributors to the Sentin8:Acme
 // SPDX-License-Identifier: Apache-2.0
 
-//! Sentin8:Acme Admin UI handlers — RFW definitions.
+//! Sentin8:Acme Admin UI handlers - RFW definitions.
 //! Served from `GET /v1/admin/ui/{page}`, rendered by Sentin8:Dash at runtime.
 //!
 //! The pages expose the CA hierarchy (Root/Intermediate status), the
@@ -27,12 +27,12 @@ use sentin8::rfw::widget::{
 
 use crate::state::AppState;
 
-/// `GET /v1/admin/ui/{*page}` — returns the RFW page definition as JSON.
+/// `GET /v1/admin/ui/{*page}` - returns the RFW page definition as JSON.
 ///
 /// Pages:
-///   - `overview`      — CA hierarchy status, issued-cert count, active order count, proxy mode
-///   - `certificates`  — issued-certificate inventory (domain, issued_at, expires_at, serial, revoked)
-///   - `settings`      — Sentin8:Acme settings (upstream provider URL, leaf cert validity, trust-store)
+///   - `overview`      - CA hierarchy status, issued-cert count, active order count, proxy mode
+///   - `certificates`  - issued-certificate inventory (domain, issued_at, expires_at, serial, revoked)
+///   - `settings`      - Sentin8:Acme settings (upstream provider URL, leaf cert validity, trust-store)
 #[utoipa::path(
     get,
     path = "/v1/admin/ui/{page}",
@@ -52,7 +52,7 @@ pub async fn get_admin_ui(
 ) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
     let a = sentin8::auth::client::verify_bearer_token(&state.config.auth_client, &headers).await?;
 
-    // Step 5 — Shield decides: the enforced scope-mirror
+    // Step 5 - Shield decides: the enforced scope-mirror
     // set over LIVE effective scopes is the only gate.
 
     crate::policy::require_policy(
@@ -83,9 +83,9 @@ pub async fn get_admin_ui(
             .widget(card(
                 "Proxy Mode",
                 if proxy_mode {
-                    "Enabled — external domain orders are forwarded to the upstream ACME provider."
+                    "Enabled - external domain orders are forwarded to the upstream ACME provider."
                 } else {
-                    "Disabled — local-only (localhost, *.sentin8.local, private IPs)."
+                    "Disabled - local-only (localhost, *.sentin8.local, private IPs)."
                 },
             ))
             .build(),
@@ -106,7 +106,7 @@ pub async fn get_admin_ui(
             .widget(card(
                 "Upstream Provider",
                 if state.config.upstream_directory_url.is_empty() {
-                    "(disabled — local-only)"
+                    "(disabled - local-only)"
                 } else {
                     &state.config.upstream_directory_url
                 },
@@ -118,13 +118,13 @@ pub async fn get_admin_ui(
             .widget(card(
                 "Trust-Store Auto-Install",
                 if state.config.install_trust_store {
-                    "Enabled — Root CA installed into OS + NSS trust stores."
+                    "Enabled - Root CA installed into OS + NSS trust stores."
                 } else {
-                    "Disabled — manual trust-store installation required."
+                    "Disabled - manual trust-store installation required."
                 },
             ))
             .build(),
-        // ── Policy Studio — shared page
+        // ── Policy Studio - shared page
         // constructors; the guard guarantees `Some` for the unwrap-free
         // dispatch below.
         p if sentin8::rfw::policy_page("sentin8:acme", p).is_some() => {
@@ -144,12 +144,12 @@ pub async fn get_admin_ui(
     ))
 }
 
-/// `GET /v1/admin/{resource}` — returns a JSON array of admin data rows.
+/// `GET /v1/admin/{resource}` - returns a JSON array of admin data rows.
 ///
 /// Resources:
-///   - `overview`     — summary cards (CA status, counts)
-///   - `certificates` — issued-certificate inventory from the CA data directory
-///   - `settings`    — current config values
+///   - `overview`     - summary cards (CA status, counts)
+///   - `certificates` - issued-certificate inventory from the CA data directory
+///   - `settings`    - current config values
 #[utoipa::path(
     get,
     path = "/v1/admin/{resource}",
@@ -171,7 +171,7 @@ pub async fn get_admin_data(
 ) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
     let _a =
         sentin8::auth::client::verify_bearer_token(&state.config.auth_client, &headers).await?;
-    // Step 5 — Shield decides: the enforced scope-mirror
+    // Step 5 - Shield decides: the enforced scope-mirror
     // set over LIVE effective scopes is the only gate.
     crate::policy::require_policy(
         &state.policy,
@@ -198,7 +198,7 @@ pub async fn get_admin_data(
     Ok(Json(serde_json::Value::Array(rows)))
 }
 
-/// `POST /v1/admin/certificates/{id}/revoke` — revoke an issued certificate.
+/// `POST /v1/admin/certificates/{id}/revoke` - revoke an issued certificate.
 ///
 /// Delegates to the existing `acme::revoke_cert` flow (updates metadata,
 /// publishes CRL). Returns an RFW redirect to the certificates page.
@@ -221,7 +221,7 @@ pub async fn revoke_certificate(
 ) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
     let _a =
         sentin8::auth::client::verify_bearer_token(&state.config.auth_client, &headers).await?;
-    // Step 5 — Shield decides: the enforced scope-mirror
+    // Step 5 - Shield decides: the enforced scope-mirror
     // set over LIVE effective scopes is the only gate.
     crate::policy::require_policy(
         &state.policy,
@@ -265,7 +265,7 @@ fn list_certificates(state: &AppState) -> Result<Vec<serde_json::Value>, std::io
         return Ok(vec![]);
     }
     // Bounded inventory: the directory is append-only and grows with
-    // every ACME order the host ever issued — an unbounded listing ships
+    // every ACME order the host ever issued - an unbounded listing ships
     // megabytes and stalls the RFW DataTable. Return the NEWEST 500
     // entries (mtime-descending); older certificates stay revocable by id
     // (the revoke route takes the id directly).

@@ -36,11 +36,11 @@ pub struct AcmeConfig {
     /// Optional PEM file pinning the upstream CA chain (external domains).
     /// Empty = verify the upstream against the system roots.
     pub upstream_ca_pem: String,
-    /// Operator-declared local-domain suffixes (DEVDOM-1) — a domain equal
+    /// Operator-declared local-domain suffixes (DEVDOM-1) - a domain equal
     /// to or ending with `.{suffix}` classifies LOCAL (platform CA signs
     /// it, HTTP-01 short-circuits). From `SENTIN8_ACME_LOCAL_DOMAINS`
     /// (comma-separated). Dev wildcard zones (`local.sentin8.dev` →
-    /// 127.0.0.1) belong here — public CAs refuse loopback-resolving names,
+    /// 127.0.0.1) belong here - public CAs refuse loopback-resolving names,
     /// so the upstream path can never succeed for them.
     pub local_domains: Vec<String>,
     /// Database URL for the outbox table.
@@ -104,7 +104,7 @@ impl AcmeConfig {
             // NEVER a fallback: under the superuser role the unqualified
             // outbox INSERT resolves through the operator search_path
             // (`auth, sys, …`) and lands in another service's
-            // `auth.outbox` (DESIGN §8 invariant 7 — no silent shared-role
+            // `auth.outbox` (DESIGN §8 invariant 7 - no silent shared-role
             // fallback).
             database_url: env::var("SENTIN8_ACME_DATABASE_URL").unwrap_or_else(|_| {
                 sentin8::config::service_database_url("sentin8:acme")

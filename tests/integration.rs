@@ -17,7 +17,7 @@ mod tests {
     use sentin8_acme_server::acme;
     use sentin8_acme_server::ca::CaHierarchy;
 
-    /// Install the Graviola PQ crypto provider once — reqwest panics with
+    /// Install the Graviola PQ crypto provider once - reqwest panics with
     /// "No provider set" when a client is built without one.
     fn install_provider() {
         use std::sync::Once;
@@ -80,7 +80,7 @@ mod tests {
         config.init_dirs().unwrap();
         // Generate
         let ca1 = CaHierarchy::ensure(&config).unwrap();
-        // Reload — the key should be the same (loaded from disk).
+        // Reload - the key should be the same (loaded from disk).
         let ca2 = CaHierarchy::ensure(&config).unwrap();
         // Verify the key PEM is the same (key is loaded from disk, not regenerated)
         let key1 = ca1.root_key.serialize_pem();
@@ -153,7 +153,7 @@ mod tests {
         assert!(!acme::is_local_domain("bus.ops.sys.local.sentin8.dev", &[]));
     }
 
-    // ── Story 22.20.6 — Admin UI tests ──────────────────────────────────
+    // ── Story 22.20.6 - Admin UI tests ──────────────────────────────────
     //
     // The admin_ui handlers require an `AppState` which contains a
     // `sqlx::PgPool`. Since we can't create a real pool in unit tests,
@@ -212,7 +212,7 @@ mod tests {
         assert_eq!(parsed["domain"].as_str().unwrap(), "test.sentin8.local");
         assert!(!parsed["revoked"].as_bool().unwrap());
 
-        // Simulate revocation — update metadata
+        // Simulate revocation - update metadata
         let mut revoked = parsed.clone();
         if let Some(obj) = revoked.as_object_mut() {
             obj.insert("revoked".into(), serde_json::json!(true));
@@ -273,12 +273,12 @@ mod tests {
     fn mint_shed_admits_within_budget_and_sheds_over_queue() {
         // The shed's contract: within the budget every mint is admitted;
         // once the queue gauge reaches the cap, admission is refused (the
-        // middleware answers 503 + Retry-After). Pure state-machine test —
+        // middleware answers 503 + Retry-After). Pure state-machine test -
         // no router needed.
         use sentin8_acme_server::shed::{MintLimiter, MAX_QUEUED_MINTS};
 
         let limiter = MintLimiter::default();
-        // Fill the queue to the cap (try_acquire only — queued, NOT yet
+        // Fill the queue to the cap (try_acquire only - queued, NOT yet
         // running; the middleware calls enter() just before the handler
         // starts, so a saturated queue is exactly this state).
         for _ in 0..MAX_QUEUED_MINTS {
@@ -323,7 +323,7 @@ mod tests {
         assert!(MAX_QUEUED_MINTS >= MAX_CONCURRENT_MINTS);
     }
 
-    // ── DEVDOM-2 — upstream relay RFC 8555 client ──────────────────────
+    // ── DEVDOM-2 - upstream relay RFC 8555 client ──────────────────────
 
     #[test]
     fn upstream_jwk_thumbprint_shape() {
@@ -342,7 +342,7 @@ mod tests {
     fn upstream_key_authorization_format() {
         install_provider();
         // RFC 8555 §8.1: the served value is `{token}.{base64url(sha256
-        // (thumbprint))}` — dot-separated, token prefix preserved.
+        // (thumbprint))}` - dot-separated, token prefix preserved.
         let key = p256_test_signing_key();
         let ka = key_authorization_of("tok123", &key);
         assert!(ka.starts_with("tok123."), "token prefix preserved");
@@ -476,7 +476,7 @@ mod tests {
                                 assert_eq!(protected["kid"], kid, "kid mode after registration");
                                 assert!(protected.get("jwk").is_none(), "kid mode carries no JWK");
                                 // The nonce consumed here is the one the
-                                // newAccount response handed back — the
+                                // newAccount response handed back - the
                                 // client reuses the server-provided nonce.
                                 assert_eq!(
                                     protected["nonce"], "mock-nonce-2",
@@ -618,7 +618,7 @@ mod tests {
         });
     }
 
-    /// A deterministic-ish ES256 test key (random is fine — the tests
+    /// A deterministic-ish ES256 test key (random is fine - the tests
     /// verify SHA-256/JWK relationships, not a fixed value).
     fn p256_test_signing_key() -> p256::ecdsa::SigningKey {
         p256::ecdsa::SigningKey::random(&mut rand::rngs::OsRng)

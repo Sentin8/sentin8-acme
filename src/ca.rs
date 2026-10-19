@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright Contributors to the Sentin8:Acme
 // SPDX-License-Identifier: Apache-2.0
 
-//! CA management — Root CA and Intermediate CA generation, signing.
+//! CA management - Root CA and Intermediate CA generation, signing.
 //!
 //! A two-tier CA hierarchy: Root CA (self-signed) → Intermediate CA
 //! (signed by Root) → Leaf certificates (signed by Intermediate).
@@ -18,26 +18,26 @@ use std::path::Path;
 
 use crate::config::AcmeConfig;
 
-/// The CA hierarchy — Root CA and Intermediate CA, loaded or generated.
+/// The CA hierarchy - Root CA and Intermediate CA, loaded or generated.
 ///
 /// `root_cert` / `intermediate_cert` are `rcgen::Certificate` objects used
 /// only as issuers when **signing new leaf certificates**. For serving the CA
 /// chain to TLS clients (or to the trust store), use `root_cert_pem` /
-/// `intermediate_cert_pem` instead — these preserve the original bytes from
+/// `intermediate_cert_pem` instead - these preserve the original bytes from
 /// disk (which carry the real issuer signature) rather than a self-signed
 /// reconstruction.
-/// The CA hierarchy — Root CA and Intermediate CA, loaded or generated.
+/// The CA hierarchy - Root CA and Intermediate CA, loaded or generated.
 pub struct CaHierarchy {
-    /// Reconstructed `rcgen::Certificate` for the Root CA — used as an issuer
+    /// Reconstructed `rcgen::Certificate` for the Root CA - used as an issuer
     /// when signing. NOT suitable for serving (it's self-signed even for the
     /// root, which is correct, but for the intermediate it would be wrong).
     pub root_cert: rcgen::Certificate,
     /// Private key of the Root CA.
     pub root_key: KeyPair,
-    /// Reconstructed `rcgen::Certificate` for the Intermediate CA — used as
+    /// Reconstructed `rcgen::Certificate` for the Intermediate CA - used as
     /// the issuer when signing leaf certs. The reconstruction is self-signed
     /// (rcgen cannot re-sign an existing cert), so it MUST NOT be served to
-    /// TLS clients — use `intermediate_cert_pem` for that.
+    /// TLS clients - use `intermediate_cert_pem` for that.
     pub intermediate_cert: rcgen::Certificate,
     /// Private key of the Intermediate CA.
     pub intermediate_key: KeyPair,
@@ -47,7 +47,7 @@ pub struct CaHierarchy {
     root_cert_pem: Vec<u8>,
     /// The Intermediate CA certificate PEM bytes, as read from disk (or
     /// freshly generated). These bytes carry the real signature from the
-    /// Root CA — the `intermediate_cert` rcgen object cannot reproduce this,
+    /// Root CA - the `intermediate_cert` rcgen object cannot reproduce this,
     /// so TLS chains must use these bytes.
     intermediate_cert_pem: Vec<u8>,
 }
@@ -87,7 +87,7 @@ impl CaHierarchy {
         let root_key =
             KeyPair::from_pem(&root_key_pem).map_err(|e| format!("parse root key: {e}"))?;
 
-        // Read the on-disk Root CA cert PEM — these bytes carry the real
+        // Read the on-disk Root CA cert PEM - these bytes carry the real
         // self-signed signature and are what we serve to clients / install
         // into the trust store.
         let root_cert_pem = std::fs::read(config.root_ca_cert_path())
@@ -107,7 +107,7 @@ impl CaHierarchy {
         let intermediate_key =
             KeyPair::from_pem(&int_key_pem).map_err(|e| format!("parse intermediate key: {e}"))?;
 
-        // Read the on-disk Intermediate CA cert PEM — these bytes carry the
+        // Read the on-disk Intermediate CA cert PEM - these bytes carry the
         // real signature from the Root CA. The reconstructed rcgen object
         // below is self-signed (rcgen cannot re-sign an existing cert), so we
         // MUST serve `intermediate_cert_pem`, not `intermediate_cert.pem()`.
@@ -280,7 +280,7 @@ impl CaHierarchy {
     /// CA.
     ///
     /// Same Intermediate CA as server leafs, but with EKU `ClientAuth`
-    /// (RFC 5280 §4.2.1.12) — the profile difference that distinguishes a
+    /// (RFC 5280 §4.2.1.12) - the profile difference that distinguishes a
     /// client certificate from a server certificate. Used for RFC 8705
     /// cert-bound M2M tokens (`self_signed_tls_client_auth`).
     pub fn sign_client_leaf(
@@ -317,7 +317,7 @@ impl CaHierarchy {
     /// Get the Root CA certificate PEM.
     ///
     /// Returns the on-disk bytes (which carry the real self-signed
-    /// signature) rather than the reconstructed rcgen object's output —
+    /// signature) rather than the reconstructed rcgen object's output -
     /// the latter is also self-signed for the root, but using the stored
     /// bytes keeps a single source of truth and avoids any future drift.
     pub fn root_ca_pem(&self) -> String {
@@ -330,7 +330,7 @@ impl CaHierarchy {
     /// Get the Intermediate CA certificate PEM.
     ///
     /// CRITICAL: returns the on-disk bytes (signed by the Root CA), NOT
-    /// `self.intermediate_cert.pem()` — the rcgen reconstruction is
+    /// `self.intermediate_cert.pem()` - the rcgen reconstruction is
     /// self-signed (rcgen cannot re-sign an existing cert) and would break
     /// the leaf → intermediate → root chain for TLS clients.
     pub fn intermediate_ca_pem(&self) -> String {
@@ -369,14 +369,14 @@ fn set_key_perms(_path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Extract a PEM certificate chain's leaf NotAfter. Minimal DER walk —
+/// Extract a PEM certificate chain's leaf NotAfter. Minimal DER walk -
 /// decode the FIRST base64 PEM body, then locate the UTCTime/GeneralizedTime
 /// in the validity sequence (same discipline the SDK's m2m load path uses:
 /// no x509-parser dependency, fail toward "invalid" on any parse miss so
 /// the caller re-mints rather than serving an unverifiable identity).
 ///
-/// UTCTime encodes a two-digit year (`YY`, parsed as 2000+YY — dates are
-/// 1950–2049 by RFC 5280); GeneralizedTime carries the full four digits.
+/// UTCTime encodes a two-digit year (`YY`, parsed as 2000+YY - dates are
+/// 1950-2049 by RFC 5280); GeneralizedTime carries the full four digits.
 pub fn pem_not_after(cert_pem: &str) -> Option<DateTime<Utc>> {
     use base64::Engine as _;
     let mut b64 = String::new();
@@ -388,7 +388,7 @@ pub fn pem_not_after(cert_pem: &str) -> Option<DateTime<Utc>> {
             continue;
         }
         if line.contains("END CERTIFICATE") {
-            break; // first block only — the leaf
+            break; // first block only - the leaf
         }
         if inside {
             b64.push_str(line.trim());

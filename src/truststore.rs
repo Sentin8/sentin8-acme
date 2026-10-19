@@ -5,7 +5,7 @@
 
 //! OS and Chromium/NSS trust store installation.
 //!
-//! Stories 4.0c.13–4.0c.14: Install the Root CA into the OS trust store
+//! Stories 4.0c.13-4.0c.14: Install the Root CA into the OS trust store
 //! and the Chromium/NSS database so browsers and system tools trust
 //! Acme-issued certificates.
 
@@ -45,7 +45,7 @@ fn install_linux(ca_cert_path: &Path) -> Result<(), String> {
         // No root privileges needed for the acme process itself.
         let dest = "/usr/local/share/ca-certificates/sentin8-local-ca.crt";
         std::fs::copy(ca_cert_path, dest).map_err(|e| {
-            format!("copy CA cert: {e} — run infra/scripts/add-user-certadmins.sh first")
+            format!("copy CA cert: {e} - run infra/scripts/add-user-certadmins.sh first")
         })?;
         // Try without sudo first (works if already root), fall back to sudo
         // (works via the certadmins NOPASSWD sudoers drop-in).
@@ -55,7 +55,7 @@ fn install_linux(ca_cert_path: &Path) -> Result<(), String> {
         match output {
             Ok(o) if o.status.success() => return Ok(()),
             Ok(o) => {
-                // sudo failed — try without sudo (we might be root already)
+                // sudo failed - try without sudo (we might be root already)
                 let output2 = Command::new("update-ca-certificates")
                     .arg("--fresh")
                     .output()
@@ -70,7 +70,7 @@ fn install_linux(ca_cert_path: &Path) -> Result<(), String> {
                 ));
             }
             Err(e) => {
-                // sudo not available — try direct
+                // sudo not available - try direct
                 let output2 = Command::new("update-ca-certificates")
                     .arg("--fresh")
                     .output()
@@ -192,10 +192,10 @@ pub fn install_to_nss(ca_cert_path: &Path) -> Result<(), String> {
                 "certutil (NSS) failed: {}. Chromium will not trust the CA until manually added.",
                 String::from_utf8_lossy(&o.stderr)
             );
-            Ok(()) // Non-fatal — NSS is only for Chromium
+            Ok(()) // Non-fatal - NSS is only for Chromium
         }
         Err(_) => {
-            tracing::warn!("certutil not found — skipping NSS trust store installation");
+            tracing::warn!("certutil not found - skipping NSS trust store installation");
             Ok(())
         }
     }
@@ -203,7 +203,7 @@ pub fn install_to_nss(ca_cert_path: &Path) -> Result<(), String> {
 
 /// Install the Intermediate CA into the Chromium/NSS trust store.
 /// Chromium needs the intermediate in its trust store to build the full
-/// chain (leaf → intermediate → root) — serving the intermediate in the
+/// chain (leaf → intermediate → root) - serving the intermediate in the
 /// TLS handshake is not always sufficient for Chromium's cert verifier.
 pub fn install_intermediate_to_nss(ca_cert_path: &Path) -> Result<(), String> {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/root".to_string());
@@ -246,7 +246,7 @@ pub fn install_intermediate_to_nss(ca_cert_path: &Path) -> Result<(), String> {
             Ok(())
         }
         Err(_) => {
-            tracing::warn!("certutil not found — skipping NSS intermediate installation");
+            tracing::warn!("certutil not found - skipping NSS intermediate installation");
             Ok(())
         }
     }

@@ -25,7 +25,7 @@ use crate::state::AppState;
 
 // ── Directory (RFC 8555 §7.1.1) ────────────────────────────────────────
 
-/// `GET /acme/directory` — ACME directory object (RFC 8555 §7.1.1).
+/// `GET /acme/directory` - ACME directory object (RFC 8555 §7.1.1).
 ///
 /// URLs are derived from the incoming request's scheme and Host header so
 /// they remain correct on any port or replica (auto-scale friendly).
@@ -66,7 +66,7 @@ pub async fn directory_handler(
 
 // ── Nonce (RFC 8555 §6.5) ──────────────────────────────────────────────
 
-/// `GET/HEAD /acme/new-nonce` — issue a fresh anti-replay nonce
+/// `GET/HEAD /acme/new-nonce` - issue a fresh anti-replay nonce
 /// (RFC 8555 §6.5), returned in the `Replay-Nonce` header.
 pub async fn new_nonce(State(state): State<Arc<AppState>>) -> impl IntoResponse {
     let nonce = generate_nonce();
@@ -98,14 +98,14 @@ pub struct NewAccountRequest {
     #[serde(default)]
     pub onlyReturnExisting: bool,
     /// The account's public key as a JWK (RFC 7517). Acme computes the
-    /// RFC 7638 thumbprint over it and stores the hash — every
+    /// RFC 7638 thumbprint over it and stores the hash - every
     /// account-scoped request must then present a key whose thumbprint
     /// matches (RFC 8555 §6.2 account-key binding).
     #[serde(default)]
     pub jwk: Option<serde_json::Value>,
 }
 
-/// `POST /acme/new-account` — register a new ACME account (RFC 8555 §7.1.2),
+/// `POST /acme/new-account` - register a new ACME account (RFC 8555 §7.1.2),
 /// persisted to the accounts directory and announced as
 /// `sentin8:acme:account:created`.
 #[utoipa::path(
@@ -195,7 +195,7 @@ pub struct NewOrderRequest {
     /// The account making the order (RFC 8555 §6.2 account binding).
     #[serde(default)]
     pub accountId: Option<String>,
-    /// The RFC 7638 thumbprint of the signing key — must match the
+    /// The RFC 7638 thumbprint of the signing key - must match the
     /// account's stored thumbprint (RFC 8555 §6.2, ACME-2).
     #[serde(default)]
     pub keyThumbprint: Option<String>,
@@ -230,7 +230,7 @@ pub struct OrderRecord {
     pub created_at: u64,
 }
 
-/// `POST /acme/new-order` — create an order (RFC 8555 §7.1.3).
+/// `POST /acme/new-order` - create an order (RFC 8555 §7.1.3).
 ///
 /// Mixed local/external identifiers are rejected; external orders are
 /// proxied to the upstream ACME provider when proxy mode is enabled,
@@ -251,7 +251,7 @@ pub async fn new_order(
 ) -> Response {
     // ── Account-key binding (RFC 8555 §6.2, ACME-2) ──
     // When the referenced account was created with a key thumbprint, the
-    // order must present the SAME thumbprint — a stolen account id without
+    // order must present the SAME thumbprint - a stolen account id without
     // the account private key cannot place orders.
     if let Some(account_id) = req.accountId.as_deref() {
         let account_path = state
@@ -280,7 +280,7 @@ pub async fn new_order(
 
     // ── Domain classification (DEVDOM-1, DESIGN §4.1) ──
     // Classify the order as local or external. Mixed orders are rejected
-    // (disjoint trust chains — a cert must not mix platform-CA and
+    // (disjoint trust chains - a cert must not mix platform-CA and
     // upstream-signed names).
     let all_local = req
         .identifiers
@@ -304,7 +304,7 @@ pub async fn new_order(
     // ── External domain relay ──
     // With proxy mode on, external orders are relayed to the upstream CA
     // (DESIGN §4.2). With proxy mode off, an external identifier is
-    // REJECTED — there is no local proof of control for a public name, so
+    // REJECTED - there is no local proof of control for a public name, so
     // signing it would mint a trusted identity from an untrusted request.
     if all_external {
         if state.config.proxy_mode_enabled() {
@@ -410,7 +410,7 @@ pub struct ChallengeRecord {
     pub url: String,
 }
 
-/// `GET /acme/authz/{id}` — fetch an authorization (RFC 8555 §7.1.4).
+/// `GET /acme/authz/{id}` - fetch an authorization (RFC 8555 §7.1.4).
 #[utoipa::path(
     get,
     path = "/acme/authz/{id}",
@@ -440,10 +440,10 @@ pub async fn get_authz(
 
 // ── Challenge (RFC 8555 §7.1.4, §8.3) ───────────────────────────────────
 
-/// `POST /acme/challenge/{id}` — signal the challenge is ready for
+/// `POST /acme/challenge/{id}` - signal the challenge is ready for
 /// validation (RFC 8555 §8.3). Local orders short-circuit to `valid`
 /// (the challenge target is the platform's own host network); external
-/// orders notify the upstream CA that its http-01 challenge is ready —
+/// orders notify the upstream CA that its http-01 challenge is ready -
 /// the upstream then fetches the key authorization from the proxy's
 /// :80 listener → acme's well-known route (DESIGN §4.2/§4.3).
 #[utoipa::path(
@@ -462,7 +462,7 @@ pub async fn challenge_ready(
     AxumPath(challenge_id): AxumPath<String>,
 ) -> Response {
     // Local domains skip verification (the challenge target IS this
-    // server's host network) — mark valid directly. External domains
+    // server's host network) - mark valid directly. External domains
     // notify the upstream CA; the key authorization was captured at
     // new-order time and is served from the bounded challenge map.
 
@@ -487,7 +487,7 @@ pub async fn challenge_ready(
                     {
                         let ch = &mut authz.challenges[idx];
 
-                        // Check if this is a local order (DESIGN §4.1) —
+                        // Check if this is a local order (DESIGN §4.1) -
                         // local orders short-circuit; external orders carry
                         // the upstream's token in the bounded map and are
                         // notified upstream.
@@ -503,7 +503,7 @@ pub async fn challenge_ready(
                             ch.status = "valid".into();
                             authz.status = "valid".into();
                         } else {
-                            // External order — notify the upstream CA
+                            // External order - notify the upstream CA
                             // (DESIGN §4.2). The upstream validates by
                             // fetching the key authorization from the
                             // proxy's :80 listener; the local authz goes
@@ -531,7 +531,7 @@ pub async fn challenge_ready(
                             }
                         }
                     }
-                    // Mutable borrow released — now serialize
+                    // Mutable borrow released - now serialize
                     let path = state
                         .config
                         .orders_dir()
@@ -559,9 +559,9 @@ pub struct FinalizeRequest {
     pub csr: String,
 }
 
-/// `POST /acme/order/{id}/finalize` — submit the CSR and issue the
+/// `POST /acme/order/{id}/finalize` - submit the CSR and issue the
 /// certificate (RFC 8555 §7.4). Local orders require a VALID
-/// authorization (defense in depth — the challenge short-circuit set it;
+/// authorization (defense in depth - the challenge short-circuit set it;
 /// an order that never proved control is never signed) and are signed
 /// by the Intermediate CA; external orders are finalized upstream
 /// through the relay and the certificate cached (DESIGN §4.2).
@@ -606,7 +606,7 @@ pub async fn finalize_order(
     let mut order = order;
 
     // Defense in depth (DESIGN §4.1 invariant 10): a LOCAL order signs
-    // only after its authorization is valid — the platform CA must never
+    // only after its authorization is valid - the platform CA must never
     // mint a cert for a name whose challenge was never satisfied.
     let authz_ok = order.authorizations.iter().all(|url| {
         let authz_id = url
@@ -627,13 +627,13 @@ pub async fn finalize_order(
     if !authz_ok {
         return (
             StatusCode::FORBIDDEN,
-            "order authorization is not valid — complete the challenge first",
+            "order authorization is not valid - complete the challenge first",
         )
             .into_response();
     }
 
     // Re-derive the local classification (stored decision re-checked at
-    // finalize — DESIGN §4.1).
+    // finalize - DESIGN §4.1).
     if !order
         .identifiers
         .iter()
@@ -641,12 +641,12 @@ pub async fn finalize_order(
     {
         return (
             StatusCode::FORBIDDEN,
-            "order is not local — external domains require the upstream relay",
+            "order is not local - external domains require the upstream relay",
         )
             .into_response();
     }
 
-    // Decode the CSR (not used for signing — rcgen generates its own key)
+    // Decode the CSR (not used for signing - rcgen generates its own key)
     let _csr_der = match base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(&req.csr) {
         Ok(d) => d,
         Err(e) => return (StatusCode::BAD_REQUEST, format!("invalid CSR: {e}")).into_response(),
@@ -660,7 +660,7 @@ pub async fn finalize_order(
         .map(|i| i.value.clone())
         .unwrap_or("unknown".to_string());
 
-    // Generate a leaf certificate (local domain — direct signing)
+    // Generate a leaf certificate (local domain - direct signing)
     let san_names: Vec<String> = order
         .identifiers
         .iter()
@@ -682,7 +682,7 @@ pub async fn finalize_order(
         };
 
     // sign_leaf already returns the full chain (leaf + intermediate + root).
-    // Store it directly — no need to append the intermediate again.
+    // Store it directly - no need to append the intermediate again.
     let full_chain: Vec<u8> = cert_pem;
 
     // Store the certificate (full chain) and key
@@ -718,7 +718,7 @@ pub async fn finalize_order(
 
 // ── Certificate download (RFC 8555 §7.4.2) ───────────────────────────────
 
-/// `GET /acme/cert/{id}` — download the certificate as a combined PEM
+/// `GET /acme/cert/{id}` - download the certificate as a combined PEM
 /// (chain, plus the private key for locally-issued certs so TLS can build
 /// its `ServerConfig` from one artifact).
 #[utoipa::path(
@@ -756,7 +756,7 @@ pub async fn get_cert(
                 .into_response()
         }
         (Ok(cert_pem), Err(_)) => {
-            // External domain — only cert (no key, as it was obtained from upstream)
+            // External domain - only cert (no key, as it was obtained from upstream)
             (
                 StatusCode::OK,
                 [(
@@ -773,7 +773,7 @@ pub async fn get_cert(
 
 // ── Order status ───────────────────────────────────────────────────────
 
-/// `GET /acme/order/{id}` — fetch the order status.
+/// `GET /acme/order/{id}` - fetch the order status.
 #[utoipa::path(
     get,
     path = "/acme/order/{id}",
@@ -797,7 +797,7 @@ pub async fn get_order(
 
 // ── Revocation (RFC 8555 §7.6) ─────────────────────────────────────────
 
-/// `POST /acme/revoke-cert` — revoke a certificate (RFC 8555 §7.6),
+/// `POST /acme/revoke-cert` - revoke a certificate (RFC 8555 §7.6),
 /// marking its metadata and announcing `sentin8:acme:certificate:revoked`.
 #[utoipa::path(
     post,
@@ -822,7 +822,7 @@ pub async fn revoke_cert(
 
 // ── CA download (public endpoints) ─────────────────────────────────────
 
-/// `GET /v1/ca/root.crt` — download the Root CA certificate.
+/// `GET /v1/ca/root.crt` - download the Root CA certificate.
 #[utoipa::path(
     get,
     operation_id = "ca.root",
@@ -841,7 +841,7 @@ pub async fn get_root_ca(State(state): State<Arc<AppState>>) -> impl IntoRespons
     )
 }
 
-/// `GET /v1/ca/intermediate.crt` — download the Intermediate CA certificate.
+/// `GET /v1/ca/intermediate.crt` - download the Intermediate CA certificate.
 #[utoipa::path(
     get,
     operation_id = "ca.intermediate",
@@ -869,14 +869,14 @@ pub struct ClientCertRequest {
     /// service name, e.g. `fdx`, `bff`). MUST equal the caller token's
     /// `sub` (self-issuance only).
     pub service_name: String,
-    /// Validity in days (default 30 — the workload identity's
+    /// Validity in days (default 30 - the workload identity's
     /// theft window; the m2m load path re-mints inside a 7-day window).
     #[serde(default)]
     pub days: Option<u64>,
 }
 
 /// Read the CURRENT captain enrollment record from the sealed file
-/// (`{run_dir}/bootstrap-enrollment.json.enc`) — same derivation as
+/// (`{run_dir}/bootstrap-enrollment.json.enc`) - same derivation as
 /// captain's `read_record`/`master_key` (`SENTIN8_BOOTSTRAP_MASTER_KEY`
 /// falling back to `SENTIN8_AUTH_MASTER_KEY`). Returns `(secret, ts)` or
 /// `(empty, 0)` when unreadable (fail-closed: the caller then falls back to
@@ -904,10 +904,10 @@ fn current_enrollment_claim() -> (String, i64) {
 /// Fleet enrollment verification (FLEET-2, captain DESIGN §11.2).
 ///
 /// Verify a caller's enrollment claim against the FLEET-published records
-/// (`captain:enrollment:{ip}`, TTL 120 — captain re-publishes the current
+/// (`captain:enrollment:{ip}`, TTL 120 - captain re-publishes the current
 /// sealed record on every monitor tick). This is the MULTI-HOST path: acme
 /// is a fleet singleton pinned to the base machine, but a workload spawned
-/// on a provisioned machine still needs its first-boot `m2m-*` mint —
+/// on a provisioned machine still needs its first-boot `m2m-*` mint -
 /// its captain published the claim under the machine's own key.
 ///
 /// Freshness is anchored on the RECORD's `generated_at` (captain's TTL
@@ -920,7 +920,7 @@ async fn fleet_enrollment_matches(secret: &str, valkey_url: &str) -> bool {
     if secret.is_empty() {
         return false;
     }
-    // The factory resolves the scheme itself (it REQUIRES valkeys:// —
+    // The factory resolves the scheme itself (it REQUIRES valkeys:// -
     // group DESIGN.md §3.1); the normalize helper would strip the TLS
     // scheme down to plaintext and fail-closed at the gate, so pass the
     // configured URL through untouched.
@@ -959,14 +959,14 @@ async fn fleet_enrollment_matches(secret: &str, valkey_url: &str) -> bool {
     false
 }
 
-/// `POST /v1/client-cert` — mint an mTLS client certificate.
+/// `POST /v1/client-cert` - mint an mTLS client certificate.
 ///
 /// GUARDED: the caller must present a Sentin8:Auth token verifying against
 /// the platform JWKS, and its `sub` must equal the requested `service_name`
-/// — a workload can only mint a certificate for its own registered name.
+/// - a workload can only mint a certificate for its own registered name.
 ///
 /// The response (combined PEM: leaf chain + private key) is returned **once**
-/// — the key is not persisted server-side; the caller persists it in its own
+/// - the key is not persisted server-side; the caller persists it in its own
 /// credential cache. The certificate is recorded in Acme's cert store so the
 /// admin UI can list/revoke it.
 #[utoipa::path(
@@ -996,7 +996,7 @@ pub async fn issue_client_cert(
         return (StatusCode::BAD_REQUEST, "invalid service_name").into_response();
     }
     // Workload-identity mint hygiene (auth DESIGN §4.3f security-posture
-    // review 2026-10-07): the default is 30 days — the certificate IS the
+    // review 2026-10-07): the default is 30 days - the certificate IS the
     // machine identity, and a year-long theft window (bounded only by the
     // registry map's `enabled` flag, which requires NOTICING the theft) is
     // longer than any dev/ops rotation cadence needs. The m2m load path
@@ -1005,10 +1005,10 @@ pub async fn issue_client_cert(
     let days = req.days.unwrap_or(30).clamp(1, 3650);
     let cn = format!("m2m-{service_name}");
 
-    // GUARDED issuance — three admission channels, each independently
+    // GUARDED issuance - three admission channels, each independently
     // authenticated:
     //
-    // (a) BOOTSTRAP ENROLLMENT — a first-boot workload holds no cert and
+    // (a) BOOTSTRAP ENROLLMENT - a first-boot workload holds no cert and
     //     no token (the very cycle this endpoint exists to break), so it
     //     presents the `X-Sentin8-Bootstrap-Enrollment` secret that CAPTAIN
     //     brokered to BOTH the workload and this process at spawn time.
@@ -1016,10 +1016,10 @@ pub async fn issue_client_cert(
     //     (captain-stamped timestamp + TTL), and scoped: it can mint ONLY
     //     `m2m-*` client certs (never TLS server certs). Logged at warn so
     //     enrollment mints are always visible in the audit trail.
-    // (b) SELF-ISSUANCE — the caller presents a Sentin8:Auth bearer whose
+    // (b) SELF-ISSUANCE - the caller presents a Sentin8:Auth bearer whose
     //     `sub` equals the requested `service_name` (M2M tokens carry the
     //     client_name in `sub`): a workload re-issuing its own identity.
-    // (c) ENROLL/OPERATOR — the bearer carries the
+    // (c) ENROLL/OPERATOR - the bearer carries the
     //     `sentin8:acme:clientcert:issue` scope (the platform vocabulary
     //     scope; never in a grant row): `sentin8-cli vertical enroll` can
     //     provision any declared workload's initial certificate.
@@ -1036,7 +1036,7 @@ pub async fn issue_client_cert(
             .unwrap_or(0),
     );
     // The caller's claim is verified against the CURRENT captain record,
-    // read fresh from disk per request — NOT against this process's
+    // read fresh from disk per request - NOT against this process's
     // spawn-time env copy: an env snapshot goes stale after the record
     // TTL while the fleet is still converging (captain regenerates the
     // record mid-boot, and bearer-less DCR callers would 401 against the
@@ -1044,19 +1044,19 @@ pub async fn issue_client_cert(
     // record file at every regeneration and it is readable by this
     // service (0600, master-key sealed), so the file IS the authoritative
     // current claim. The env copy remains a fallback for the window where
-    // the file is unreadable (e.g. permission drift) — fail-closed either
+    // the file is unreadable (e.g. permission drift) - fail-closed either
     // way.
     let current_claim = current_enrollment_claim();
     // Freshness is anchored on the RECORD's timestamp (captain re-stamps
     // it on every TTL expiry, so the file is always current). The
-    // CALLER's ts is its spawn-time copy — checking it would reject every
+    // CALLER's ts is its spawn-time copy - checking it would reject every
     // first-boot workload spawned long before acme validates. The secret
     // equality is the real possession proof; the caller ts is
     // informational.
     let mut bootstrap_ok = !current_claim.0.is_empty()
         && bootstrap_claim.0 == current_claim.0
         && sentin8::config::bootstrap::claim_is_valid(&current_claim.0, current_claim.1);
-    // FLEET-2 (captain DESIGN §11.2): the multi-host miss path — the
+    // FLEET-2 (captain DESIGN §11.2): the multi-host miss path - the
     // local record says no (acme pinned on machine A, workload spawned on
     // machine B), so verify the claim against the fleet-published
     // records before falling back to bearer. Same possession proof
@@ -1087,7 +1087,7 @@ pub async fn issue_client_cert(
 
     if bootstrap_ok {
         // Enrollment channel: mint client certs only (kind "client"), never
-        // server leafs — the CN prefix is the scope boundary.
+        // server leafs - the CN prefix is the scope boundary.
         tracing::warn!(
             service_name = %service_name,
             cn = %cn,
@@ -1102,7 +1102,7 @@ pub async fn issue_client_cert(
             tracing::warn!(
                 sub = %auth.sub(),
                 requested = %service_name,
-                "acme: client-cert issuance denied — sub does not match the requested service_name and the caller lacks the issuance scope"
+                "acme: client-cert issuance denied - sub does not match the requested service_name and the caller lacks the issuance scope"
             );
             return (
                 StatusCode::FORBIDDEN,
@@ -1162,13 +1162,13 @@ pub async fn issue_client_cert(
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
-/// Whether a domain classifies LOCAL (DEVDOM-1, acme DESIGN.md §4.1) — a
+/// Whether a domain classifies LOCAL (DEVDOM-1, acme DESIGN.md §4.1) - a
 /// pure, offline function of the identifier + config (never DNS):
 /// builtin local forms (localhost, `.localhost`, `.local`, private/
 /// loopback IP literals) plus every operator-declared suffix in
 /// `SENTIN8_ACME_LOCAL_DOMAINS`. Local domains are signed directly by
 /// the platform CA with HTTP-01 short-circuited; others are external
-/// (upstream relay or rejected — the platform CA never signs an
+/// (upstream relay or rejected - the platform CA never signs an
 /// unproven public name).
 pub fn is_local_domain(domain: &str, local_domains: &[String]) -> bool {
     let d = domain.to_ascii_lowercase();
@@ -1182,7 +1182,7 @@ pub fn is_local_domain(domain: &str, local_domains: &[String]) -> bool {
     {
         return true;
     }
-    // Careful: a suffix match must be exact — "local.sentin8.dev" matches
+    // Careful: a suffix match must be exact - "local.sentin8.dev" matches
     // "x.local.sentin8.dev" and itself, but "evilsentin8.dev" must NOT.
     local_domains
         .iter()
@@ -1217,7 +1217,7 @@ pub struct AccountRecord {
     /// Creation time (unix seconds).
     pub created_at: u64,
     /// RFC 7638 SHA-256 thumbprint (base64url, no padding) of the
-    /// account's public JWK — verified on every account-scoped request.
+    /// account's public JWK - verified on every account-scoped request.
     #[serde(default)]
     pub key_thumbprint: String,
 }
@@ -1226,11 +1226,11 @@ pub struct AccountRecord {
 //
 // For external domains, acme relays orders to a public ACME provider
 // (Let's Encrypt / ZeroSSL) through the standards-compliant client in
-// `crate::upstream` — JWS-signed requests, a persisted account, real
+// `crate::upstream` - JWS-signed requests, a persisted account, real
 // CSR, http-01 key authorizations served from the bounded map, and the
 // issued chain cached locally.
 
-/// The persisted relay state of an external order — embedded in the local
+/// The persisted relay state of an external order - embedded in the local
 /// order record's JSON under `upstream` (the shape `finalize_order` reads).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RelayState {
@@ -1292,7 +1292,7 @@ async fn relay_new_order(state: &Arc<AppState>, req: &NewOrderRequest) -> Respon
     std::fs::write(&order_path, order_with_upstream.to_string()).ok();
 
     // Create a local authorization mirroring the external challenge. The
-    // challenge URL is the UPSTREAM's notify target — challenge_ready
+    // challenge URL is the UPSTREAM's notify target - challenge_ready
     // forwards the notification there.
     let authz = AuthorizationRecord {
         id: authz_id.clone(),
@@ -1327,7 +1327,7 @@ async fn relay_new_order(state: &Arc<AppState>, req: &NewOrderRequest) -> Respon
 /// Relay the finalize for an external order: real CSR upstream → poll →
 /// download the chain → cache it locally under `certificates/{id}`
 /// (`source: "upstream"`). The CSR's private key is persisted next to the
-/// certificate (acme owns it — the caller's placeholder is never used).
+/// certificate (acme owns it - the caller's placeholder is never used).
 async fn relay_finalize_order(
     state: &Arc<AppState>,
     order_id: &str,
@@ -1391,14 +1391,14 @@ async fn relay_finalize_order(
     let cert_pem = match state.upstream.download_cert(&cert_url).await {
         Ok(p) => p,
         Err(e) => {
-            // Order record keeps `certificate` set — a later finalize
+            // Order record keeps `certificate` set - a later finalize
             // completes the download (DESIGN §4.2 failure branches).
             return (StatusCode::BAD_GATEWAY, e.to_string()).into_response();
         }
     };
     state.upstream.forget_token(&relay.token).await;
 
-    // Cache the chain + the CSR's key (upstream certs carry no local key —
+    // Cache the chain + the CSR's key (upstream certs carry no local key -
     // the CSR key IS the certificate's private key and belongs with it).
     let cert_id = Uuid::new_v4().to_string();
     let cert_dir = state.config.cert_dir(&cert_id);
@@ -1454,7 +1454,7 @@ async fn relay_finalize_order(
 /// (DESIGN §4.3): `GET /.well-known/acme-challenge/{token}`. The proxy's
 /// :80 listener forwards here; the bounded map holds only tokens captured
 /// for in-flight external orders. Unauthenticated by design (RFC 8555
-/// §8.1) — the token itself is the capability.
+/// §8.1) - the token itself is the capability.
 #[utoipa::path(
     get,
     path = "/.well-known/acme-challenge/{token}",
@@ -1482,8 +1482,8 @@ pub async fn serve_challenge_token(
 
 /// Append an event to the LOCAL `acme.outbox` for the post-commit relay.
 /// Acme operations are system-scoped (no tenant context), so the row carries
-/// the system env id. Fail-open: an RLS/insert failure logs and drops — the
-/// events are advisory (acme DESIGN §6) — but the durable-retry posture
+/// the system env id. Fail-open: an RLS/insert failure logs and drops - the
+/// events are advisory (acme DESIGN §6) - but the durable-retry posture
 /// comes from the outbox relay (D1, RS §3): rows persist locally and the
 /// relay retries with backoff instead of the old direct `bus.inbox` write
 /// that silently dropped on Bus unavailability.
@@ -1504,7 +1504,7 @@ async fn emit_event(state: &AppState, event_type: &str, payload: serde_json::Val
 
 // ── Automated leaf renewal (ACME-1, acme DESIGN §10) ────────────────────
 
-/// `POST /v1/internal/schedules/run` — Sentin8:Cron proxy-back target for
+/// `POST /v1/internal/schedules/run` - Sentin8:Cron proxy-back target for
 /// the daily leaf-cert renewal sweep. Scans the certificates directory
 /// for locally-issued (`source = "local"`) certs whose `expires_at` lands
 /// within the next 14 days and re-issues each one (new key + full chain
@@ -1526,13 +1526,13 @@ pub async fn internal_schedules_run(
     Json(serde_json::json!({ "renewed": renewed, "status": "completed" })).into_response()
 }
 
-/// The leaf-cert renewal sweep (SDD §2.5) — one pass: scan the
+/// The leaf-cert renewal sweep (SDD §2.5) - one pass: scan the
 /// certificates directory for locally-issued (`source = "local"`) certs
 /// whose `expires_at` lands within the next 14 days and re-issue each
 /// (new key + full chain via the same `sign_leaf` path as order
 /// finalize); the previous cert stays on disk until its natural expiry
 /// (overlap). Called by the internal schedule endpoint AND the internal
-/// daily timer — acme links no scheduler client (foundational-service
+/// daily timer - acme links no scheduler client (foundational-service
 /// rule), so the timer drives the same pass directly.
 pub async fn sweep(state: &AppState) -> usize {
     let certs_dir = state.config.data_dir.join("certificates");
@@ -1620,7 +1620,7 @@ pub async fn sweep(state: &AppState) -> usize {
     renewed
 }
 
-/// Flip `revoked` on an existing certificate's metadata.json (best-effort —
+/// Flip `revoked` on an existing certificate's metadata.json (best-effort -
 /// a failed mark is logged and the sweep continues).
 fn mark_revoked(cert_dir: &std::path::Path, now: u64) {
     let meta_path = cert_dir.join("metadata.json");

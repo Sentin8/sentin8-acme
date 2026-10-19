@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright Contributors to the Sentin8:Acme
 // SPDX-License-Identifier: Apache-2.0
 
-//! Acme server — Axum router and server setup.
+//! Acme server - Axum router and server setup.
 
 use std::sync::Arc;
 
@@ -24,7 +24,7 @@ pub fn build_router(state: Arc<AppState>, counter: sentin8::middleware::RequestC
 
 /// Build the Axum router (ACME protocol endpoints, CA downloads,
 /// client-cert issuance, Shield policy-admin API, RFW admin UI, health)
-/// with an EXPLICIT mint limiter — production passes a fresh one; tests
+/// with an EXPLICIT mint limiter - production passes a fresh one; tests
 /// inject a pre-loaded limiter to exercise the shed deterministically.
 pub fn router_with_shed(
     state: Arc<AppState>,
@@ -44,7 +44,7 @@ pub fn router_with_shed(
         .route("/acme/cert/{id}", get(acme::get_cert))
         .route("/acme/revoke-cert", post(acme::revoke_cert))
         // ── HTTP-01 challenge serving (DESIGN §4.3; the proxy's :80
-        //    listener forwards here; unauthenticated by RFC 8555 §8.1 —
+        //    listener forwards here; unauthenticated by RFC 8555 §8.1 -
         //    the token is the capability) ──
         .route(
             "/.well-known/acme-challenge/{token}",
@@ -103,7 +103,7 @@ pub fn router_with_shed(
                 .put(sentin8::shield::admin::put_attribute::<std::sync::Arc<AppState>>)
                 .delete(sentin8::shield::admin::delete_attribute::<std::sync::Arc<AppState>>),
         )
-        // ── Policy Studio — RFW renderer aliases (POST-only routes) ──
+        // ── Policy Studio - RFW renderer aliases (POST-only routes) ──
         .route(
             "/v1/admin/policy-sets",
             post(sentin8::shield::admin::create_policy_set::<std::sync::Arc<AppState>>),
@@ -144,7 +144,7 @@ pub fn router_with_shed(
             limiter,
             crate::shed::mint_shed_layer,
         ))
-        // Traffic counter — counts every inbound request (excludes health checks).
+        // Traffic counter - counts every inbound request (excludes health checks).
         .layer(axum::middleware::from_fn_with_state(
             counter,
             sentin8::middleware::traffic_counter_layer,
@@ -209,13 +209,13 @@ pub async fn serve(config: AcmeConfig) -> anyhow::Result<()> {
         let ca_path = config.root_ca_cert_path();
         match crate::truststore::install_to_os_trust_store(&ca_path) {
             Ok(()) => tracing::info!("Root CA installed into OS trust store"),
-            Err(e) => tracing::warn!("OS trust-store install failed: {e} — run acme with root privileges to install automatically"),
+            Err(e) => tracing::warn!("OS trust-store install failed: {e} - run acme with root privileges to install automatically"),
         }
         match crate::truststore::install_to_nss(&ca_path) {
             Ok(()) => tracing::info!("Root CA installed into NSS trust store"),
             Err(e) => tracing::warn!("NSS trust-store install failed: {e}"),
         }
-        // Also install the Intermediate CA into NSS — Chromium needs it to
+        // Also install the Intermediate CA into NSS - Chromium needs it to
         // build the full chain (leaf → intermediate → root) even though the
         // intermediate is served in the TLS handshake. Some Chromium versions
         // don't use the handshake intermediate for trust-building.
@@ -236,7 +236,7 @@ pub async fn serve(config: AcmeConfig) -> anyhow::Result<()> {
     // Self-issue a leaf certificate for the acme's own domain using
     // the CA hierarchy we just loaded/created. This breaks the
     // chicken-and-egg: the acme serves HTTPS, but its cert is signed
-    // directly by its own CA — no ACME fetch is needed for its own hostname.
+    // directly by its own CA - no ACME fetch is needed for its own hostname.
     let acme_hostname = format!("acme.ops.sys.{}", config.sentin8_domain);
     // Include the local IP in the SAN list so that clients connecting via
     // ServiceDiscovery (which resolves to https://{ip}:{port}) can complete
@@ -252,7 +252,7 @@ pub async fn serve(config: AcmeConfig) -> anyhow::Result<()> {
     tracing::info!(hostname = %acme_hostname, sans = ?sans, "acme: self-issued bootstrap cert");
 
     // ── Shield boot: acme is a custom-boot binary (no shell serve),
-    // so it runs the ONE shared boot helper itself — same four steps
+    // so it runs the ONE shared boot helper itself - same four steps
     // the shell runs for every other service. The engine is
     // constructed ONCE and the same Arc is shared with AppState; a
     // second engine would hold an empty cache and deny fail-closed on
@@ -273,14 +273,14 @@ pub async fn serve(config: AcmeConfig) -> anyhow::Result<()> {
         Some(policy_engine),
     ));
 
-    // Traffic metrics — count inbound requests and publish to the same
+    // Traffic metrics - count inbound requests and publish to the same
     // Valkey channel proxy uses (`stat:metrics:tls`) so captain's CALLS
     // column includes acme's direct (non-proxy) traffic.
     let counter = sentin8::middleware::RequestCounter::new();
     sentin8::middleware::spawn_flush_loop(counter.clone(), valkey_url, 10);
 
     // Leaf-cert renewal (SDD §2.5, foundational-service rule): an
-    // internal sweep timer — acme links no scheduler client and makes no
+    // internal sweep timer - acme links no scheduler client and makes no
     // cross-service calls. Each pass re-issues certificates inside the
     // T-14d window (the window check lives in the sweep); a failed pass
     // logs and retries on the next tick (never fatal).
@@ -305,17 +305,17 @@ pub async fn serve(config: AcmeConfig) -> anyhow::Result<()> {
 
     // DBX producer relay (RS §3 D1): drain the LOCAL `acme.outbox` to Bus
     // `POST /v1/produce` (M2M, `sentin8:acme:producer` workload, scope
-    // `sentin8:bus:produce`). Fail-open exactly like the shell's step 8b —
+    // `sentin8:bus:produce`). Fail-open exactly like the shell's step 8b -
     // a Bus outage or DCR failure only disables the relay task; rows
     // persist in the local outbox and the 5s safety poll retries. Acme
     // boots custom (not via the shell), so the relay is spawned here.
     //
     // Bus + auth endpoints are DERIVED from the platform config
     // (`{service}.ops.sys.{SENTIN8_DOMAIN}`) with the same canonical
-    // fallbacks the shell boot uses — never a hardcoded IP/port: the bus
+    // fallbacks the shell boot uses - never a hardcoded IP/port: the bus
     // port is captain-assigned per boot, so a fixed port constant would
     // silently target a dead listener while rows pile up (acme DESIGN §2
-    // "Outbox relay — the DBX producer path").
+    // "Outbox relay - the DBX producer path").
     {
         let relay_pool = pool.clone();
         let derived = sentin8::config::Sentin8Config::from_env();
@@ -325,7 +325,7 @@ pub async fn serve(config: AcmeConfig) -> anyhow::Result<()> {
             std::env::var("SENTIN8_AUTH_ISSUER").unwrap_or_else(|_| derived.sentin8_auth_issuer());
         tokio::spawn(async move {
             // auth DESIGN §4.3f: the `sentin8:acme`
-            // CERTIFICATE is the identity — mint retries while the fleet
+            // CERTIFICATE is the identity - mint retries while the fleet
             // boots; the relay's own retry loop covers a late identity.
             let bus = loop {
                 match sentin8::bus::client::BusClient::for_workload(
@@ -350,14 +350,14 @@ pub async fn serve(config: AcmeConfig) -> anyhow::Result<()> {
         });
     }
 
-    // Serve HTTPS — the cert resolver has the bootstrap cert pre-loaded,
+    // Serve HTTPS - the cert resolver has the bootstrap cert pre-loaded,
     // so the TLS handshake succeeds immediately for the acme's
     // own hostname. Other services fetch their certs from here over HTTPS.
     tls.serve(&addr, app, "acme").await?;
     Ok(())
 }
 
-/// Shared policy-admin surface accessor — the shared
+/// Shared policy-admin surface accessor - the shared
 /// handlers extract this service's admin state via [`HasPolicyAdmin`].
 impl sentin8::shield::admin::HasPolicyAdmin for AppState {
     fn policy_admin(&self) -> &sentin8::shield::admin::SharedAdminState {

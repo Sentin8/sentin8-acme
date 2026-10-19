@@ -3,11 +3,11 @@
 -- SPDX-FileCopyrightText: Copyright Contributors to the Sentin8:Acme
 -- SPDX-License-Identifier: Apache-2.0
 
--- Sentin8:Acme — internal ACME certificate authority server.
+-- Sentin8:Acme - internal ACME certificate authority server.
 -- Sentin8:Acme stores CA keys, accounts, orders, and certificates on the
 -- local filesystem. Its only database table is the DBX producer outbox
 -- (RS §3 D1): acme events ride the local-outbox + Bus produce-API path
--- like every other producer — no direct `bus.inbox` writes, no producer
+-- like every other producer - no direct `bus.inbox` writes, no producer
 -- grants on Bus's internal durability tables (architecture-principles
 -- §6.7). The shell-style relay (spawned in server.rs) drains this table
 -- post-commit with retry + backoff.
@@ -56,7 +56,7 @@ CREATE TRIGGER outbox_notify_trigger
     FOR EACH ROW
     EXECUTE FUNCTION acme.acme_notify_outbox();
 
--- ── Grants (service-owned — applied with this schema's migration) ──
+-- ── Grants (service-owned - applied with this schema's migration) ──
 -- Acme's own role: DML on its own outbox (the relay drains + retries).
 GRANT USAGE ON SCHEMA acme TO sentin8_acme_service;
 GRANT SELECT, INSERT, UPDATE ON acme.outbox TO sentin8_acme_service;

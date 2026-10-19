@@ -60,6 +60,6 @@ use crate::acme;
     security(),
     tags(
         (name = "policy", description = "Shield policy administration (shared surface)"),
-        (name = "acme", description = "Sentin8:Acme — CA certificate download"),
+        (name = "acme", description = "Sentin8:Acme - CA certificate download"),
     ),
 )]pub struct AcmeOpenApi;

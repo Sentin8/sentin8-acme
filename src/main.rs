@@ -21,21 +21,21 @@ async fn main() -> anyhow::Result<()> {
     // Offline infrastructure TLS materialization (sentin8 group DESIGN.md
     // §3.1, §3.2): mint the Valkey + PostgreSQL server leaves and the
     // local control/operator client pairs from the existing CA hierarchy
-    // — no network, no database. Run by `make infra-tls` BEFORE `make
+    // - no network, no database. Run by `make infra-tls` BEFORE `make
     // infra-up` (the TLS-only Valkey/PostgreSQL cannot boot without the
-    // material). This mode builds a MINIMAL config — the fleet env vars
+    // material). This mode builds a MINIMAL config - the fleet env vars
     // (captain-assigned port etc.) do not exist outside a captain-spawned
     // process.
     if args.iter().any(|a| a == "--ensure-infra-tls") {
         // The auth-client placeholder inside the minimal config builds a
-        // reqwest client — the PQ provider must be installed first (this
+        // reqwest client - the PQ provider must be installed first (this
         // mode runs before the shared install below).
         let _ = sentin8::tls::crypto::sentin8_pq_provider().install_default();
         dotenvy::dotenv().ok();
         let config = sentin8_acme_server::infra_tls::offline_config();
         // Optional workload pre-mint: `--mint-workloads a,b,c` mints (or
         // confirms) each named workload's client pair into the m2m
-        // identity dir — the boot-order break for services whose first
+        // identity dir - the boot-order break for services whose first
         // Valkey connection races acme's availability (group DESIGN.md
         // §3.1). The operator passes the platform catalog's service
         // identities; vertical services mint via their own shell path.
@@ -62,7 +62,7 @@ async fn main() -> anyhow::Result<()> {
                     if *server_minted {
                         "minted"
                     } else {
-                        "valid — reused"
+                        "valid - reused"
                     }
                 );
                 println!(
@@ -71,7 +71,7 @@ async fn main() -> anyhow::Result<()> {
                     if *control_minted {
                         "minted"
                     } else {
-                        "valid — reused"
+                        "valid - reused"
                     }
                 );
                 println!(
@@ -80,7 +80,7 @@ async fn main() -> anyhow::Result<()> {
                     if *admin_minted {
                         "minted"
                     } else {
-                        "valid — reused"
+                        "valid - reused"
                     }
                 );
                 println!(
@@ -89,7 +89,7 @@ async fn main() -> anyhow::Result<()> {
                     if *writer_minted {
                         "minted"
                     } else {
-                        "valid — reused"
+                        "valid - reused"
                     }
                 );
                 let (pg_server, pg_server_minted) = &report.postgres_server_cert;
@@ -100,7 +100,7 @@ async fn main() -> anyhow::Result<()> {
                     if *pg_server_minted {
                         "minted"
                     } else {
-                        "valid — reused"
+                        "valid - reused"
                     }
                 );
                 println!(
@@ -109,7 +109,7 @@ async fn main() -> anyhow::Result<()> {
                     if *pg_ops_minted {
                         "minted"
                     } else {
-                        "valid — reused"
+                        "valid - reused"
                     }
                 );
                 println!(
@@ -123,7 +123,7 @@ async fn main() -> anyhow::Result<()> {
                     if *captain_minted {
                         "minted"
                     } else {
-                        "valid — reused"
+                        "valid - reused"
                     }
                 );
                 for (workload, minted) in &report.minted_workloads {
@@ -132,7 +132,7 @@ async fn main() -> anyhow::Result<()> {
                         if *minted {
                             "minted"
                         } else {
-                            "valid — reused"
+                            "valid - reused"
                         }
                     );
                 }

@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright Contributors to the Sentin8:Acme
 // SPDX-License-Identifier: Apache-2.0
 
-//! Upstream ACME relay — a real RFC 8555 client for EXTERNAL domains
+//! Upstream ACME relay - a real RFC 8555 client for EXTERNAL domains
 //! (DEVDOM-2, acme DESIGN.md §4.2).
 //!
 //! The platform's own protocol surface (the `/acme/*` endpoints served to
@@ -16,7 +16,7 @@
 //!
 //! TLS to the upstream rides a HYBRID provider: public ACME endpoints do
 //! not offer X25519MLKEM768, so the platform's exclusive provider cannot
-//! reach them — the relay negotiates classical TLS 1.2/1.3 (Graviola's
+//! reach them - the relay negotiates classical TLS 1.2/1.3 (Graviola's
 //! default composition) while every platform-internal listener stays
 //! exclusive.
 
@@ -25,16 +25,16 @@ use serde_json::{json, Value};
 
 use crate::config::AcmeConfig;
 
-/// b64url, no padding — the JOSE alphabet (RFC 7515 §2).
+/// b64url, no padding - the JOSE alphabet (RFC 7515 §2).
 fn b64(data: &[u8]) -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(data)
 }
 
-/// Cap on captured http-01 key authorizations (bounded map — a stuck
+/// Cap on captured http-01 key authorizations (bounded map - a stuck
 /// upstream can never grow acme's memory unbounded).
 const MAX_CHALLENGE_TOKENS: usize = 256;
 
-/// Persisted upstream ACME account (acme DESIGN.md §3 — data model).
+/// Persisted upstream ACME account (acme DESIGN.md §3 - data model).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct UpstreamAccount {
     /// The upstream account URL (the `kid` for JWS headers).
@@ -62,13 +62,13 @@ pub struct UpstreamOrder {
 }
 
 /// Relay error surfaced to handlers: `Rejected` maps to a 4xx with the
-/// upstream problem detail (no retry — permanent), `Unreachable` maps to
+/// upstream problem detail (no retry - permanent), `Unreachable` maps to
 /// 502 (the caller may retry; the local order record keeps its state).
 #[derive(Debug)]
 pub enum UpstreamError {
-    /// Upstream rejected the request — no retry (malformed, unauthorized…).
+    /// Upstream rejected the request - no retry (malformed, unauthorized…).
     Rejected(String),
-    /// Transport / 5xx / parse failure — the caller may retry.
+    /// Transport / 5xx / parse failure - the caller may retry.
     Unreachable(String),
 }
 
@@ -90,13 +90,13 @@ pub struct UpstreamClient {
     account: tokio::sync::RwLock<Option<UpstreamAccount>>,
     nonce: tokio::sync::RwLock<Option<String>>,
     /// HTTP-01 key authorizations captured at newOrder time, keyed by the
-    /// upstream's challenge token — served by the
+    /// upstream's challenge token - served by the
     /// `/.well-known/acme-challenge/{token}` route (bounded, DESIGN §4.3).
     pub challenge_tokens:
         std::sync::Arc<tokio::sync::RwLock<std::collections::HashMap<String, String>>>,
 }
 
-/// Sign one JOSE signing input with ES256 (RFC 7518 §3.4 — SHA-256 digest,
+/// Sign one JOSE signing input with ES256 (RFC 7518 §3.4 - SHA-256 digest,
 /// r||s signature) and return the base64url signature.
 fn sign_es256(key: &p256::ecdsa::SigningKey, signing_input: &str) -> Result<String, String> {
     use p256::ecdsa::signature::hazmat::PrehashSigner;
@@ -123,7 +123,7 @@ fn jwk_from_key(key: &p256::ecdsa::SigningKey) -> Value {
     })
 }
 
-/// RFC 7638 thumbprint — base64url(SHA-256 of the canonical JWK members).
+/// RFC 7638 thumbprint - base64url(SHA-256 of the canonical JWK members).
 pub fn jwk_thumbprint(key: &p256::ecdsa::SigningKey) -> String {
     use sha2::Digest;
     let jwk = jwk_from_key(key);
@@ -162,7 +162,7 @@ fn key_authorization(token: &str, key: &p256::ecdsa::SigningKey) -> String {
 
 impl UpstreamClient {
     /// Build the relay over `config`. The reqwest client rides a HYBRID
-    /// rustls config (Graviola default provider — X25519MLKEM768 first,
+    /// rustls config (Graviola default provider - X25519MLKEM768 first,
     /// classical fallback, TLS 1.2/1.3): the platform's exclusive provider
     /// speaks only X25519MLKEM768 and cannot reach public ACME endpoints.
     /// Roots: the pinned PEM bundle when `upstream_ca_pem` is set, else
@@ -257,7 +257,7 @@ impl UpstreamClient {
             }
         }
         // First use: generate the ES256 key and register the account with
-        // the JWK embedded in the protected header (RFC 8555 §7.4 — JWK
+        // the JWK embedded in the protected header (RFC 8555 §7.4 - JWK
         // mode is ONLY for the initial newAccount; every subsequent
         // request is kid-mode).
         use p256::pkcs8::EncodePrivateKey;
@@ -478,7 +478,7 @@ impl UpstreamClient {
         ))
     }
 
-    /// Notify the upstream the http-01 challenge is ready for validation —
+    /// Notify the upstream the http-01 challenge is ready for validation -
     /// the upstream then fetches the key authorization from the proxy's
     /// :80 listener (DESIGN §4.3).
     pub async fn notify_challenge(&self, challenge_url: &str) -> Result<(), UpstreamError> {
@@ -493,7 +493,7 @@ impl UpstreamClient {
         Ok(())
     }
 
-    /// Finalize with a REAL PKCS#10 CSR (rcgen key + CertificateParams —
+    /// Finalize with a REAL PKCS#10 CSR (rcgen key + CertificateParams -
     /// acme owns the certificate's private key; the caller's placeholder
     /// is never forwarded). Returns the CSR key PEM so the handler can
     /// persist it next to the issued certificate.
@@ -537,7 +537,7 @@ impl UpstreamClient {
     }
 
     /// Poll the upstream order until terminal (bounded attempts, 500ms
-    /// apart — the http-01 validation round trip is upstream-side).
+    /// apart - the http-01 validation round trip is upstream-side).
     pub async fn poll_order(&self, order: &UpstreamOrder) -> Result<UpstreamOrder, UpstreamError> {
         for _ in 0..20 {
             let resp = self.post_kid(&order.url, &json!({})).await?;
@@ -583,7 +583,7 @@ impl UpstreamClient {
             .map_err(|e| UpstreamError::Unreachable(format!("cert read: {e}")))
     }
 
-    /// Drop a captured key authorization (order completed — success or
+    /// Drop a captured key authorization (order completed - success or
     /// failure; the token must not linger servable).
     pub async fn forget_token(&self, token: &str) {
         self.challenge_tokens.write().await.remove(token);

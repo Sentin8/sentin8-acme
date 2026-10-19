@@ -3,7 +3,7 @@
 // SPDX-FileCopyrightText: Copyright Contributors to the Sentin8:Acme
 // SPDX-License-Identifier: Apache-2.0
 
-//! Sentin8 Acme — internal ACME certificate authority server.
+//! Sentin8 Acme - internal ACME certificate authority server.
 //!
 //! Implements an ACME (RFC 8555) certificate authority for the Sentin8 platform.
 //! Issues TLS certificates for all Sentin8 domains, including localhost and
@@ -25,19 +25,19 @@ pub mod config;
 pub mod infra_tls;
 /// OpenAPI spec assembly.
 pub mod openapi;
-/// Shield (Sentin8:Policy) integration — shared bridge re-exports.
+/// Shield (Sentin8:Policy) integration - shared bridge re-exports.
 pub mod policy;
 /// Service self-registration declarations.
 pub mod registration;
 /// Axum router and server entry points.
 pub mod server;
-/// Mint admission control — bounded queue + load shed (ACME-PREF).
+/// Mint admission control - bounded queue + load shed (ACME-PREF).
 pub mod shed;
 /// Shared application state.
 pub mod state;
 /// OS and Chromium/NSS trust-store installation.
 pub mod truststore;
-/// Upstream ACME relay — RFC 8555 client for external domains (DEVDOM-2).
+/// Upstream ACME relay - RFC 8555 client for external domains (DEVDOM-2).
 pub mod upstream;
 
 /// Serve the ACME certificate authority.
