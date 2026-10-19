@@ -33,7 +33,7 @@ use crate::state::AppState;
     get,
     path = "/acme/directory",
     responses(
-        (status = 200, description = "RFC 8555 directory (resource URLs resolved from the request Host)", body = serde_json::Value),
+        (status = 200, description = "RFC 8555 directory (resource URLs resolved from the request Host)", body = AcmeDirectory),
     ),
     security(),
 )]
@@ -55,13 +55,13 @@ pub async fn directory_handler(
         .and_then(|h| h.to_str().ok())
         .unwrap_or(&state.issuer);
     let base = format!("{scheme}://{host}/acme");
-    Json(serde_json::json!({
-        "newNonce": format!("{base}/new-nonce"),
-        "newAccount": format!("{base}/new-account"),
-        "newOrder": format!("{base}/new-order"),
-        "revokeCert": format!("{base}/revoke-cert"),
-        "keyChange": format!("{base}/key-change"),
-    }))
+    Json(AcmeDirectory {
+        new_nonce: format!("{base}/new-nonce"),
+        new_account: format!("{base}/new-account"),
+        new_order: format!("{base}/new-order"),
+        revoke_cert: format!("{base}/revoke-cert"),
+        key_change: format!("{base}/key-change"),
+    })
 }
 
 // ── Nonce (RFC 8555 §6.5) ──────────────────────────────────────────────
@@ -201,7 +201,7 @@ pub struct NewOrderRequest {
     pub keyThumbprint: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, utoipa::ToSchema)]
 /// An ACME order identifier (DNS name).
 pub struct Identifier {
     /// Identifier type (`dns`).
@@ -211,7 +211,7 @@ pub struct Identifier {
     pub value: String,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, utoipa::ToSchema)]
 /// An ACME order as persisted and returned.
 pub struct OrderRecord {
     /// Order id.
@@ -239,7 +239,7 @@ pub struct OrderRecord {
     post,
     path = "/acme/new-order",
     responses(
-        (status = 201, description = "Order created (authorizations + finalize URLs; locally-signed or relayed upstream)", body = serde_json::Value),
+        (status = 201, description = "Order created (authorizations + finalize URLs; locally-signed or relayed upstream)", body = OrderRecord),
         (status = 400, description = "Unsupported/forbidden identifier"),
         (status = 403, description = "Local-domain without proxy mode, or relay proxy off"),
     ),
@@ -1514,8 +1514,7 @@ async fn emit_event(state: &AppState, event_type: &str, payload: serde_json::Val
 #[utoipa::path(
     post,
     path = "/v1/internal/schedules/run",
-    request_body = serde_json::Value,
-    responses((status = 200, description = "Renewal sweep completed")),
+    responses((status = 200, description = "Renewal sweep completed", body = ScheduleRunResponse)),
     security(),
 )]
 pub async fn internal_schedules_run(
@@ -1523,7 +1522,11 @@ pub async fn internal_schedules_run(
     Json(_body): Json<serde_json::Value>,
 ) -> Response {
     let renewed = sweep(&state).await;
-    Json(serde_json::json!({ "renewed": renewed, "status": "completed" })).into_response()
+    Json(ScheduleRunResponse {
+        renewed,
+        status: "completed".to_string(),
+    })
+    .into_response()
 }
 
 /// The leaf-cert renewal sweep (SDD §2.5) - one pass: scan the
@@ -1666,4 +1669,29 @@ fn calculate_thumbprint(jwk: &serde_json::Value) -> Result<String, String> {
     let canonical = format!("{{{}}}", parts.join(","));
     let digest = sha2::Sha256::digest(canonical.as_bytes());
     Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(digest))
+}
+
+/// The RFC 8555 directory (resource URLs built from the request Host).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct AcmeDirectory {
+    /// The newNonce resource URL.
+    pub new_nonce: String,
+    /// The newAccount resource URL.
+    pub new_account: String,
+    /// The newOrder resource URL.
+    pub new_order: String,
+    /// The revokeCert resource URL.
+    pub revoke_cert: String,
+    /// The keyChange resource URL.
+    pub key_change: String,
+}
+
+/// The `POST /v1/internal/schedules/run` reply (cron proxy-back).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, utoipa::ToSchema)]
+pub struct ScheduleRunResponse {
+    /// The number of leaf certs checked in the sweep.
+    pub renewed: usize,
+    /// Always `completed`.
+    pub status: String,
 }

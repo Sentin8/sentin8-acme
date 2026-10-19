@@ -38,7 +38,7 @@ use crate::state::AppState;
     path = "/v1/admin/ui/{page}",
     params(("page" = String, Path, description = "RFW page name (overview, certificates, settings)")),
     responses(
-        (status = 200, description = "RFW page definition (rendered by Sentin8:Dash)", body = serde_json::Value),
+        (status = 200, description = "RFW page definition (rendered by Sentin8:Dash)", body = sentin8::rfw::AdminUiResponse),
         (status = 403, description = "Caller lacks an acme read/admin scope"),
         (status = 404, description = "Unknown page"),
     ),
@@ -49,7 +49,7 @@ pub async fn get_admin_ui(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     Path(page): Path<String>,
-) -> Result<Json<serde_json::Value>, (axum::http::StatusCode, String)> {
+) -> Result<Json<AdminUiResponse>, (axum::http::StatusCode, String)> {
     let a = sentin8::auth::client::verify_bearer_token(&state.config.auth_client, &headers).await?;
 
     // Step 5 - Shield decides: the enforced scope-mirror
@@ -139,9 +139,7 @@ pub async fn get_admin_ui(
             ));
         }
     };
-    Ok(Json(
-        serde_json::to_value(AdminUiResponse::page(def)).unwrap(),
-    ))
+    Ok(Json(AdminUiResponse::page(def)))
 }
 
 /// `GET /v1/admin/{resource}` - returns a JSON array of admin data rows.
@@ -157,7 +155,7 @@ pub async fn get_admin_ui(
         ("resource" = String, Path, description = "Admin data resource"),
     ),
     responses(
-        (status = 200, description = "The resource's rows for the RFW table", body = serde_json::Value),
+        (status = 200, description = "The resource's rows for the RFW table", body = sentin8::rfw::policy_pages::AdminDataRows),
         (status = 403, description = "Caller lacks an acme read/admin scope"),
         (status = 404, description = "Unknown resource"),
     ),
@@ -207,7 +205,7 @@ pub async fn get_admin_data(
     path = "/v1/admin/certificates/{id}/revoke",
     params(("id" = String, Path, description = "Certificate cache id")),
     responses(
-        (status = 200, description = "Certificate revoked (RFW redirect to the certificates page)", body = serde_json::Value),
+        (status = 200, description = "Certificate revoked (RFW redirect to the certificates page)", body = sentin8::rfw::policy_pages::AdminRedirectAck),
         (status = 403, description = "Shield deny"),
         (status = 404, description = "Unknown certificate"),
     ),

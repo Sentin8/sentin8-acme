@@ -179,7 +179,7 @@ pub fn build_router_with_openapi(
     get,
     path = "/v1/health",
     responses(
-        (status = 200, description = "The service is live", body = serde_json::Value),
+        (status = 200, description = "The service is live", body = sentin8::middleware::health::LiveHealth),
     ),
     security(),
     tag = "meta",
