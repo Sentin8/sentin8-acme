@@ -106,9 +106,8 @@ impl AcmeConfig {
             // (`auth, sys, …`) and lands in another service's
             // `auth.outbox` (DESIGN §8 invariant 7 - no silent shared-role
             // fallback).
-            database_url: env::var("SENTIN8_ACME_DATABASE_URL").unwrap_or_else(|_| {
-                sentin8::config::service_database_url("sentin8:acme")
-            }),
+            database_url: env::var("SENTIN8_ACME_DATABASE_URL")
+                .unwrap_or_else(|_| sentin8::config::service_database_url("sentin8:acme")),
             sentin8_bus_url: env::var("SENTIN8_BUS_URL")
                 .unwrap_or_else(|_| sentin8::config::Sentin8Config::from_env().sentin8_bus_url()),
             stream_family: env::var("SENTIN8_ACME_STREAM_FAMILY").unwrap_or_else(|_| "acme".into()),

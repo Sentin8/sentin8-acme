@@ -17,9 +17,20 @@ fn openapi_dump_exists_and_exceeds_floor() {
     let text = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/docs/openapi.json"))
         .expect("docs/openapi.json - regenerate via --print-registration --section=openapi");
     let spec: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
-    let paths = spec.get("paths").and_then(|p| p.as_object()).expect("paths object");
-    let ops: usize = paths.values()
-        .map(|v| v.as_object().map(|o| o.keys().filter(|k| !k.starts_with("parameters")).count()).unwrap_or(0))
+    let paths = spec
+        .get("paths")
+        .and_then(|p| p.as_object())
+        .expect("paths object");
+    let ops: usize = paths
+        .values()
+        .map(|v| {
+            v.as_object()
+                .map(|o| o.keys().filter(|k| !k.starts_with("parameters")).count())
+                .unwrap_or(0)
+        })
         .sum();
-    assert!(ops >= 18, "spec floor: expected >= 18 ops, got {ops} - an annotation was removed or stale");
+    assert!(
+        ops >= 18,
+        "spec floor: expected >= 18 ops, got {ops} - an annotation was removed or stale"
+    );
 }

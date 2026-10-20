@@ -129,11 +129,7 @@ async fn main() -> anyhow::Result<()> {
                 for (workload, minted) in &report.minted_workloads {
                     println!(
                         "infra TLS: workload '{workload}' pre-minted ({})",
-                        if *minted {
-                            "minted"
-                        } else {
-                            "valid - reused"
-                        }
+                        if *minted { "minted" } else { "valid - reused" }
                     );
                 }
                 return Ok(());
