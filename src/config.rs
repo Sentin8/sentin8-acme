@@ -61,7 +61,7 @@ pub struct AcmeConfig {
 impl AcmeConfig {
     /// Load configuration from environment variables.
     pub fn from_env() -> Self {
-        let sentin8_domain = env::var("SENTIN8_DOMAIN").unwrap_or_else(|_| "sentin8.local".into());
+        let sentin8_domain = env::var("SENTIN8_DOMAIN").unwrap_or_else(|_| "local.sentin8.dev".into());
         // FHS: /var/lib/sentin8/tls (prod), or SENTIN8_ACME_DATA_DIR override, or
         // $HOME/.sentin8/acme (dev fallback for backward compat).
         let data_dir =

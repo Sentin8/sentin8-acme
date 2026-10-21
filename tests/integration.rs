@@ -38,7 +38,7 @@ mod tests {
             intermediate_ca_days: 1825,
             leaf_cert_days: 90,
             install_trust_store: false,
-            sentin8_domain: "sentin8.local".into(),
+            sentin8_domain: "local.sentin8.dev".into(),
             upstream_directory_url: String::new(),
             upstream_contact: "a@m.n".into(),
             upstream_ca_pem: String::new(),
@@ -98,8 +98,8 @@ mod tests {
         let ca = CaHierarchy::ensure(&config).unwrap();
         let (cert_pem, key_pem) = ca
             .sign_leaf(
-                "test.sentin8.local",
-                &["test.sentin8.local".to_string()],
+                "test.local.sentin8.dev",
+                &["test.local.sentin8.dev".to_string()],
                 90,
             )
             .unwrap();
@@ -116,7 +116,7 @@ mod tests {
         assert!(acme::is_local_domain("localhost", &local));
         assert!(acme::is_local_domain("myapp.localhost", &local));
         assert!(acme::is_local_domain(
-            "sentin8-auth.ops.sys.sentin8.local",
+            "sentin8-auth.ops.sys.local.sentin8.dev",
             &local
         ));
         assert!(acme::is_local_domain("127.0.0.1", &local));
@@ -198,7 +198,7 @@ mod tests {
 
         // Write metadata.json
         let metadata = serde_json::json!({
-            "domain": "test.sentin8.local",
+            "domain": "test.local.sentin8.dev",
             "issued_at": "2026-08-23T10:00:00Z",
             "expires_at": "2026-11-21T10:00:00Z",
             "serial": "01:23:45:67",
@@ -209,7 +209,7 @@ mod tests {
         // Verify the metadata file exists and is parseable
         let metadata_str = std::fs::read_to_string(cert_dir.join("metadata.json")).unwrap();
         let parsed: serde_json::Value = serde_json::from_str(&metadata_str).unwrap();
-        assert_eq!(parsed["domain"].as_str().unwrap(), "test.sentin8.local");
+        assert_eq!(parsed["domain"].as_str().unwrap(), "test.local.sentin8.dev");
         assert!(!parsed["revoked"].as_bool().unwrap());
 
         // Simulate revocation - update metadata

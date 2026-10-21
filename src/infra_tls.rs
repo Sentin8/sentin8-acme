@@ -52,7 +52,7 @@ pub fn offline_config() -> AcmeConfig {
             .and_then(|v| v.parse().ok())
             .unwrap_or(90),
         install_trust_store: false,
-        sentin8_domain: std::env::var("SENTIN8_DOMAIN").unwrap_or_else(|_| "sentin8.local".into()),
+        sentin8_domain: std::env::var("SENTIN8_DOMAIN").unwrap_or_else(|_| "local.sentin8.dev".into()),
         upstream_directory_url: String::new(),
         upstream_contact: String::new(),
         upstream_ca_pem: String::new(),

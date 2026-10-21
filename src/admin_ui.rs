@@ -85,7 +85,7 @@ pub async fn get_admin_ui(
                 if proxy_mode {
                     "Enabled - external domain orders are forwarded to the upstream ACME provider."
                 } else {
-                    "Disabled - local-only (localhost, *.sentin8.local, private IPs)."
+                    "Disabled - local-only (localhost, *.local.sentin8.dev, private IPs)."
                 },
             ))
             .build(),
