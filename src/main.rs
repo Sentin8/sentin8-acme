@@ -126,6 +126,16 @@ async fn main() -> anyhow::Result<()> {
                         "valid - reused"
                     }
                 );
+                let (conf, conf_minted) = &report.conformance_suite_cert;
+                println!(
+                    "infra TLS: conformance-suite nginx leaf {} ({})",
+                    conf.display(),
+                    if *conf_minted {
+                        "minted"
+                    } else {
+                        "valid - reused"
+                    }
+                );
                 for (workload, minted) in &report.minted_workloads {
                     println!(
                         "infra TLS: workload '{workload}' pre-minted ({})",

@@ -179,6 +179,21 @@ pub fn ensure_infra_tls(
             let id_dir = m2m_identity_dir();
             ensure_client_leaf(config, &id_dir, "sentin8_captain", "m2m-sentin8:captain")?
         },
+        conformance_suite_cert: ensure_leaf(
+            config,
+            &dir,
+            "conformance-suite-server",
+            "conformance-suite",
+            // The OIDF rig's nginx ingress hostnames (auth DESIGN §9a.2
+            // 1b): the suite's compose publishes :8443 under this public
+            // dev-zone name (resolves 127.0.0.1), and the loopback forms
+            // cover direct local probes.
+            &[
+                "localhost.emobix.co.uk".to_string(),
+                "127.0.0.1".to_string(),
+                "::1".to_string(),
+            ],
+        )?,
         minted_workloads: {
             // Optional operator-supplied pre-mint list - same rationale as
             // the captain identity above: a service whose FIRST Valkey
@@ -225,6 +240,13 @@ pub struct EnsureReport {
     /// minted offline into the m2m identity dir to break the fresh-boot
     /// deadlock (captain cannot wait for acme: it spawns acme).
     pub captain_cert: (PathBuf, bool),
+    /// `(path, minted?)` for the OIDF conformance suite's nginx ingress
+    /// leaf (CN `conformance-suite`, SAN `localhost.emobix.co.uk`) - the
+    /// suite image ships a self-signed cert no browser trusts, so the
+    /// rig mounts this platform-CA leaf over it (auth DESIGN §9a.2 1b,
+    /// OIDF-CERT-1: front-channel browser tests cannot run against an
+    /// untrusted ingress).
+    pub conformance_suite_cert: (PathBuf, bool),
     /// `(workload, minted?)` for each operator-requested pre-mint - the
     /// boot-order break for hard-gated services.
     pub minted_workloads: Vec<(String, bool)>,
