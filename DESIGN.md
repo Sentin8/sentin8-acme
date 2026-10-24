@@ -656,4 +656,4 @@ Test pyramid: unit (CA hierarchy, domain classification) → integration
 
 ---
 
-**Design attribution:** sentin8:acme and its underlying concepts were designed by Hamid Jahanzad <Hamid@Jahanzad.com>.
+**Architecture & Design:** sentin8:acme and its underlying concepts were designed by [Hamid Jahanzad](https://www.linkedin.com/in/hamidjahanzad/).
