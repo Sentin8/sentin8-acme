@@ -316,6 +316,46 @@ sequenceDiagram
 Consumers: none registered (`event_triggers: &[]`) - acme events are
 observability/audit signal.
 
+### 4.0 Reuse-before-mint at finalize (WARM-1)
+
+`POST /acme/order/{id}/finalize` for a LOCAL order checks the cert store
+FIRST: when a non-revoked, unexpired certificate for the SAME domain
+already exists, the order is finalized against that existing certificate
+(its `/acme/cert/{id}` URL) with NO new signing and NO new cert directory.
+Only on a miss does the platform CA mint a fresh leaf.
+
+```mermaid
+flowchart TD
+    FIN["POST /acme/order/{id}/finalize (local)"] --> AUTHZ{"authz valid?"}
+    AUTHZ -->|no| REJ["403"]
+    AUTHZ -->|yes| FIND["scan certificates/*/metadata.json<br/>same domain, revoked=false, unexpired"]
+    FIND --> HIT{"found?"}
+    HIT -->|yes| REUSE["order.certificate = existing /acme/cert/{id}<br/>no new dir, no new serial"]
+    HIT -->|no| MINT["CA sign_leaf → new cert dir"]
+    REUSE --> OK["200 order valid"]
+    MINT --> OK
+```
+
+- **Why:** the service plane (`sentin8-tls`) persists its minted leaves
+  (tls README §6.5) and pre-warms from disk at boot, so the *steady-state*
+  mint volume is near zero; but restarts, resets, and cache misses still
+  re-request the same domains. Without reuse, every such request mints a
+  fresh leaf and directory (52,761 dirs / 650 MB observed before this
+  rule; ~19 mints/day for `auth.ops.sys…` alone during reset cycles).
+  Reuse makes the re-request idempotent: same domain within the leaf's
+  lifetime ⇒ same certificate returned.
+- **Scan bound:** the store scan reads only `metadata.json` files
+  (mtime-windowed, newest first) - it is not a crypto operation and does
+  not need the PEM; a store without a hit costs one directory walk.
+- **Revocation interaction:** a revoked certificate is never reused;
+  revocation forces a genuinely fresh mint on the next finalize.
+- **Concurrent finalize race:** two concurrent finalizes for the same
+  domain may both miss and both mint - the last writer wins the order
+  URL and both certs remain valid leaves (the caller's persisted pair is
+  whichever it downloaded first); this is the same at-most-once outcome
+  ACME renewal already permits and is acceptable for the dev/posture this
+  rule serves.
+
 ### 4.1 Domain classification policy (DEVDOM-1)
 
 Every order is classified **local** or **external** at `POST /acme/new-order`

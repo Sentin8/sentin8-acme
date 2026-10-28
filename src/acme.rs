@@ -668,6 +668,29 @@ pub async fn finalize_order(
         .map(|i| i.value.clone())
         .collect();
 
+    // Reuse-before-mint (WARM-1, DESIGN §4.0): when a non-revoked,
+    // unexpired certificate for the SAME domain already exists in the
+    // store, finalize the order against it - no new signing, no new cert
+    // directory. The service plane persists its leaves and pre-warms at
+    // boot, so restart/reset re-requests must be idempotent; without
+    // reuse, every re-request minted a fresh leaf + directory
+    // (52,761 dirs / 650 MB observed before this rule).
+    if let Some((existing_id, _existing_domain)) =
+        find_reusable_cert(&state.config, &domain)
+    {
+        tracing::info!(domain = %domain, cert_id = %existing_id, "reuse-before-mint: returning existing certificate");
+        order.status = "valid".into();
+        order.certificate = Some(format!("{}/acme/cert/{existing_id}", state.issuer));
+        std::fs::write(&order_path, serde_json::to_string(&order).unwrap()).ok();
+        emit_event(
+            &state,
+            "sentin8:acme:order:finalized",
+            serde_json::to_value(&order).unwrap_or_default(),
+        )
+        .await;
+        return Json(order).into_response();
+    }
+
     let cert_id = Uuid::new_v4().to_string();
     let (cert_pem, key_pem) =
         match state
@@ -1201,6 +1224,51 @@ fn now_ts() -> u64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+/// Reuse-before-mint lookup (WARM-1, DESIGN §4.0): find the newest
+/// non-revoked, unexpired certificate in the store whose `domain` matches
+/// exactly. Returns `(cert_id, domain)` on a hit.
+///
+/// The scan reads only `metadata.json` files (small, no PEM parse) and
+/// returns the NEWEST hit by `issued_at` so repeated reuses converge on
+/// one certificate per domain instead of rotating among stale twins.
+/// A store without a match costs one directory walk.
+fn find_reusable_cert(
+    config: &crate::config::AcmeConfig,
+    domain: &str,
+) -> Option<(String, String)> {
+    let now = now_ts();
+    let dir = config.certs_dir();
+    let mut best: Option<(u64, String)> = None;
+    for entry in std::fs::read_dir(&dir).ok()?.flatten() {
+        let meta_path = entry.path().join("metadata.json");
+        let Ok(text) = std::fs::read_to_string(&meta_path) else {
+            continue;
+        };
+        let Ok(meta) = serde_json::from_str::<serde_json::Value>(&text) else {
+            continue;
+        };
+        if meta.get("domain").and_then(|d| d.as_str()) != Some(domain) {
+            continue;
+        }
+        if meta.get("revoked").and_then(|r| r.as_bool()).unwrap_or(false) {
+            continue; // a revoked cert is never reused - force a fresh mint
+        }
+        let issued_at = meta.get("issued_at").and_then(|v| v.as_u64()).unwrap_or(0);
+        let expires_at = meta.get("expires_at").and_then(|v| v.as_u64()).unwrap_or(0);
+        if expires_at <= now {
+            continue; // expired - not reusable
+        }
+        let Some(cert_id) = entry.file_name().to_str().map(|s| s.to_string()) else {
+            continue;
+        };
+        match &best {
+            Some((best_issued, _)) if *best_issued >= issued_at => {}
+            _ => best = Some((issued_at, cert_id)),
+        }
+    }
+    best.map(|(_, id)| (id, domain.to_string()))
 }
 
 // ── Account record ─────────────────────────────────────────────────────
