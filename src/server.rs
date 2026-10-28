@@ -251,6 +251,41 @@ pub async fn serve(config: AcmeConfig) -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!("bootstrap cert signing: {e}"))?;
     tracing::info!(hostname = %acme_hostname, sans = ?sans, "acme: self-issued bootstrap cert");
 
+    // DPoPRS-1b: mint-and-persist acme's OWN `{dash}-tls` workload pair
+    // (the Shield role resolver's identity channel) DIRECTLY with the
+    // loaded CA - acme IS the mint authority, so the network round-trip
+    // through its own /v1/client-cert (which races its own boot: the
+    // resolver builds inside boot_full BEFORE the listener arms) is
+    // unnecessary. The pair rides the same m2m-credentials cache
+    // (0700/0600) and chains to the same Intermediate CA, so the auth
+    // userinfo gate's cert-identity path verifies it exactly like any
+    // other enrolled `{leaf}-tls` workload. Idempotent: the persisted
+    // pair is reused on every later boot (the m2m load path checks
+    // expiry).
+    {
+        let tls_workload = "sentin8-acme-tls";
+        let already = sentin8::auth::m2m::load_persisted_pair_blocking(
+            tls_workload,
+            &sentin8::auth::m2m::platform_ca_pem_path(),
+        )
+        .is_some();
+        if !already {
+            let (tls_cert, tls_key) = ca
+                .sign_leaf(
+                    &format!("m2m-{tls_workload}"),
+                    &[acme_hostname.clone()],
+                    config.leaf_cert_days,
+                )
+                .map_err(|e| anyhow::anyhow!("acme-tls identity pair signing: {e}"))?;
+            let (cert_path, key_path) = sentin8::auth::m2m::persist_cert_files(
+                &String::from_utf8_lossy(&tls_cert),
+                &String::from_utf8_lossy(&tls_key),
+                tls_workload,
+            );
+            tracing::info!(workload = %tls_workload, cert = %cert_path, key = %key_path, "acme: self-minted -tls identity pair (dpops-1b)");
+        }
+    }
+
     // ── Shield boot: acme is a custom-boot binary (no shell serve),
     // so it runs the ONE shared boot helper itself - same four steps
     // the shell runs for every other service. The engine is
