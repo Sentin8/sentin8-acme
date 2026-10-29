@@ -51,7 +51,7 @@ sha2 = "0.10"
 rand = "0.8"
 hex = "0.4"
 time = "0.3"
-# ES256 JWS signatures for the upstream ACME relay (DEVDOM-2, RFC 8555 §6.2).
+# ES256 JWS signatures for the upstream ACME relay (RFC 8555 §6.2).
 p256 = { version = "0.13", features = ["ecdsa"] }
 base64ct = { version = "1", features = ["alloc"] }
 # Upstream TLS roots (relay rides a hybrid provider; DESIGN §4.2).

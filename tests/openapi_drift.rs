@@ -10,7 +10,7 @@
 //! route without an annotation drops the operation count only when a
 //! companion annotation is removed - the authoritative router introspection
 //! guard (`sentin8::shell::drift_guard`) applies to lib-router services;
-//! OAPEC-8 tracks the bin-crate harness (T8-HARNESS-1).
+//! tracks the bin-crate harness .
 
 #[test]
 fn openapi_dump_exists_and_exceeds_floor() {

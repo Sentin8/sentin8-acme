@@ -93,7 +93,7 @@ graph TD
     RELAY --> BUS
 ```
 
-**Issuer-URL contract (ACMEURL-1).** Two URL surfaces, each with exactly
+**Issuer-URL contract .** Two URL surfaces, each with exactly
 one source of truth:
 
 1. **Directory URLs** (`GET /acme/directory`) derive per-request from the
@@ -257,12 +257,12 @@ the old SCRAM-tier distinction is retired with the passwords):
   the connection factory resolves the workload pair by role name).
   With no override, the DSN DERIVES from the service identity
   (`sentin8_config::service_database_url("sentin8:acme")` →
-  `postgres://sentin8_acme_service@{host}:{port}/sentin8`, DSNDERIVE-1);
+  `postgres: //sentin8_acme_service@{host}: {port}/sentin8`,);
   the legacy `DATABASE_URL` operator DSN is NEVER a fallback - under the
   superuser role the unqualified outbox INSERT resolves through the
   operator's `search_path` (`auth, sys, …`) and lands in another
   service's `auth.outbox`, where the foreign rows park at the retry cap
-  (bus's VDC-2 gate 403s them) - the exact cross-schema write invariant
+  (bus's gate 403s them) - the exact cross-schema write invariant
   7 forbids. The shell's VDC §VDC.3 wrong-database guard applies to
   whatever resolved.
 - Failure posture: if the role, its identity-map row, or the workload
@@ -316,7 +316,7 @@ sequenceDiagram
 Consumers: none registered (`event_triggers: &[]`) - acme events are
 observability/audit signal.
 
-### 4.0 Reuse-before-mint at finalize (WARM-1)
+### 4.0 Reuse-before-mint at finalize
 
 `POST /acme/order/{id}/finalize` for a LOCAL order checks the cert store
 FIRST: when a non-revoked, unexpired certificate for the SAME domain
@@ -356,7 +356,7 @@ flowchart TD
   ACME renewal already permits and is acceptable for the dev/posture this
   rule serves.
 
-### 4.1 Domain classification policy (DEVDOM-1)
+### 4.1 Domain classification policy
 
 Every order is classified **local** or **external** at `POST /acme/new-order`
 time. The decision is a pure function of the identifier and two config
@@ -401,7 +401,7 @@ flowchart TD
     U -- "off" --> R["403 rejected - no local proof of control"]
 ```
 
-### 4.2 Upstream ACME relay (DEVDOM-2)
+### 4.2 Upstream ACME relay
 
 External orders are fulfilled by a **real RFC 8555 client** running in
 acme's process (shared `upstream` module) against the configured public
@@ -668,7 +668,7 @@ flowchart TD
 13. **No port in any advertised URL** - resource URLs carry the derived
     service hostname only (`acme.ops.sys.{SENTIN8_DOMAIN}`, port 443 at
     the ingress / `.resolve()`-pinned address in-fleet). The listen port
-    is a per-boot transport detail, never URL state (ACMEURL-1).
+    is a per-boot transport detail, never URL state .
 
 ## 9. Testing Strategy
 

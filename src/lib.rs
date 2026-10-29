@@ -37,7 +37,7 @@ pub mod shed;
 pub mod state;
 /// OS and Chromium/NSS trust-store installation.
 pub mod truststore;
-/// Upstream ACME relay - RFC 8555 client for external domains (DEVDOM-2).
+/// Upstream ACME relay - RFC 8555 client for external domains .
 pub mod upstream;
 
 /// Serve the ACME certificate authority.

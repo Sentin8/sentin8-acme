@@ -36,7 +36,7 @@ pub struct AcmeConfig {
     /// Optional PEM file pinning the upstream CA chain (external domains).
     /// Empty = verify the upstream against the system roots.
     pub upstream_ca_pem: String,
-    /// Operator-declared local-domain suffixes (DEVDOM-1) - a domain equal
+    /// Operator-declared local-domain suffixes - a domain equal
     /// to or ending with `.{suffix}` classifies LOCAL (platform CA signs
     /// it, HTTP-01 short-circuits). From `SENTIN8_ACME_LOCAL_DOMAINS`
     /// (comma-separated). Dev wildcard zones (`local.sentin8.dev` →
@@ -99,7 +99,7 @@ impl AcmeConfig {
                 .map(|s| s.trim().to_ascii_lowercase())
                 .filter(|s| !s.is_empty())
                 .collect(),
-            // DSNDERIVE-1 (DESIGN §3): explicit override → else the
+            // (DESIGN §3): explicit override → else the
             // DERIVED identity DSN. The legacy operator `DATABASE_URL` is
             // NEVER a fallback: under the superuser role the unqualified
             // outbox INSERT resolves through the operator search_path
@@ -112,7 +112,7 @@ impl AcmeConfig {
                 .unwrap_or_else(|_| sentin8::config::Sentin8Config::from_env().sentin8_bus_url()),
             stream_family: env::var("SENTIN8_ACME_STREAM_FAMILY").unwrap_or_else(|_| "acme".into()),
             valkey_url: env::var("SENTIN8_ACME_VALKEY_URL").unwrap_or_else(|_| {
-                // VALKEYDERIVE-1: override chain → else the plane-derived URL.
+                // override chain → else the plane-derived URL.
                 std::env::var("VALKEY_URL")
                     .ok()
                     .filter(|s| !s.trim().is_empty())

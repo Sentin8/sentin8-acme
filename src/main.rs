@@ -163,7 +163,7 @@ async fn main() -> anyhow::Result<()> {
             .unwrap_or("sentin8_acme_server=info,tower_http=info,axum=info"),
     );
     sentin8::middleware::error_metrics::spawn_publisher(
-        // VALKEYDERIVE-1: override → else the plane-derived URL.
+        // override → else the plane-derived URL.
         std::env::var("VALKEY_URL")
             .ok()
             .filter(|s| !s.trim().is_empty())

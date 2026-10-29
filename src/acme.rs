@@ -278,7 +278,7 @@ pub async fn new_order(
         }
     }
 
-    // ── Domain classification (DEVDOM-1, DESIGN §4.1) ──
+    // ── Domain classification (DESIGN §4.1) ──
     // Classify the order as local or external. Mixed orders are rejected
     // (disjoint trust chains - a cert must not mix platform-CA and
     // upstream-signed names).
@@ -668,7 +668,7 @@ pub async fn finalize_order(
         .map(|i| i.value.clone())
         .collect();
 
-    // Reuse-before-mint (WARM-1, DESIGN §4.0): when a non-revoked,
+    // Reuse-before-mint (DESIGN §4.0): when a non-revoked,
     // unexpired certificate for the SAME domain already exists in the
     // store, finalize the order against it - no new signing, no new cert
     // directory. The service plane persists its leaves and pre-warms at
@@ -924,7 +924,7 @@ fn current_enrollment_claim() -> (String, i64) {
     read().unwrap_or_else(|| (String::new(), 0))
 }
 
-/// Fleet enrollment verification (FLEET-2, captain DESIGN §11.2).
+/// Fleet enrollment verification (captain DESIGN §11.2).
 ///
 /// Verify a caller's enrollment claim against the FLEET-published records
 /// (`captain:enrollment:{ip}`, TTL 120 - captain re-publishes the current
@@ -1079,7 +1079,7 @@ pub async fn issue_client_cert(
     let mut bootstrap_ok = !current_claim.0.is_empty()
         && bootstrap_claim.0 == current_claim.0
         && sentin8::config::bootstrap::claim_is_valid(&current_claim.0, current_claim.1);
-    // FLEET-2 (captain DESIGN §11.2): the multi-host miss path - the
+    // (captain DESIGN §11.2): the multi-host miss path - the
     // local record says no (acme pinned on machine A, workload spawned on
     // machine B), so verify the claim against the fleet-published
     // records before falling back to bearer. Same possession proof
@@ -1185,7 +1185,7 @@ pub async fn issue_client_cert(
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
-/// Whether a domain classifies LOCAL (DEVDOM-1, acme DESIGN.md §4.1) - a
+/// Whether a domain classifies LOCAL (acme DESIGN.md §4.1) - a
 /// pure, offline function of the identifier + config (never DNS):
 /// builtin local forms (localhost, `.localhost`, `.local`, private/
 /// loopback IP literals) plus every operator-declared suffix in
@@ -1226,7 +1226,7 @@ fn now_ts() -> u64 {
         .unwrap_or(0)
 }
 
-/// Reuse-before-mint lookup (WARM-1, DESIGN §4.0): find the newest
+/// Reuse-before-mint lookup (DESIGN §4.0): find the newest
 /// non-revoked, unexpired certificate in the store whose `domain` matches
 /// exactly. Returns `(cert_id, domain)` on a hit.
 ///
@@ -1290,7 +1290,7 @@ pub struct AccountRecord {
     pub key_thumbprint: String,
 }
 
-// ── Upstream relay (DEVDOM-2, acme DESIGN.md §4.2) ──────────────────────
+// ── Upstream relay (acme DESIGN.md §4.2) ──────────────────────
 //
 // For external domains, acme relays orders to a public ACME provider
 // (Let's Encrypt / ZeroSSL) through the standards-compliant client in

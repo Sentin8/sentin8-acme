@@ -163,7 +163,7 @@ graph TD
   spawn; acme verifies the claim against the CURRENT sealed record read
   fresh from disk per request (not the process's stale env copy), so
   mid-boot record regeneration never strands a bearer-less caller. On
-  multi-host fleets (FLEET-2, captain DESIGN §11.2) a local-record miss
+  multi-host fleets (captain DESIGN §11.2) a local-record miss
   falls back to the fleet-published records (`captain:enrollment:{ip}` -
   every captain re-publishes its current sealed record each monitor
   tick, 120s TTL), so a workload spawned on a provisioned machine mints

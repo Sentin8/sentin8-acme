@@ -4,7 +4,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 //! Upstream ACME relay - a real RFC 8555 client for EXTERNAL domains
-//! (DEVDOM-2, acme DESIGN.md §4.2).
+//! (acme DESIGN.md §4.2).
 //!
 //! The platform's own protocol surface (the `/acme/*` endpoints served to
 //! `sentin8-tls` and other clients) is deliberately simple; this module is

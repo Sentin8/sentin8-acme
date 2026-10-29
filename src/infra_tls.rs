@@ -244,7 +244,7 @@ pub struct EnsureReport {
     /// leaf (CN `conformance-suite`, SAN `localhost.emobix.co.uk`) - the
     /// suite image ships a self-signed cert no browser trusts, so the
     /// rig mounts this platform-CA leaf over it (auth DESIGN §9a.2 1b,
-    /// OIDF-CERT-1: front-channel browser tests cannot run against an
+    /// front-channel browser tests cannot run against an
     /// untrusted ingress).
     pub conformance_suite_cert: (PathBuf, bool),
     /// `(workload, minted?)` for each operator-requested pre-mint - the

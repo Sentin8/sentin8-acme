@@ -57,7 +57,7 @@ impl AppState {
     ) -> Self {
         // The issuer base URL is used to build authz, finalize, and cert
         // URLs in account/order responses. It is the DERIVED platform
-        // service base (DESIGN §2, ACMEURL-1) - port-free: in-fleet
+        // service base (DESIGN §2,) - port-free: in-fleet
         // consumers (the sentin8-tls on-demand resolver) pin the
         // discovered instance address with reqwest's `.resolve()`, where
         // a port inside the URL would override the pin and strand the

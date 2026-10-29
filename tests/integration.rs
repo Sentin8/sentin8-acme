@@ -122,7 +122,7 @@ mod tests {
         assert!(acme::is_local_domain("127.0.0.1", &local));
         assert!(acme::is_local_domain("192.168.1.1", &local));
         assert!(acme::is_local_domain("10.0.0.1", &local));
-        // Operator-declared local suffixes (DEVDOM-1).
+        // Operator-declared local suffixes .
         assert!(acme::is_local_domain(
             "bus.ops.sys.local.sentin8.dev",
             &[
@@ -323,7 +323,7 @@ mod tests {
         assert!(MAX_QUEUED_MINTS >= MAX_CONCURRENT_MINTS);
     }
 
-    // ── DEVDOM-2 - upstream relay RFC 8555 client ──────────────────────
+    // ── - upstream relay RFC 8555 client ──────────────────────
 
     #[test]
     fn upstream_jwk_thumbprint_shape() {
