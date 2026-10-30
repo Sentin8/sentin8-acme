@@ -49,7 +49,24 @@ async fn main() -> anyhow::Result<()> {
                     .collect()
             })
             .unwrap_or_default();
-        match sentin8_acme_server::infra_tls::ensure_infra_tls(&config, &workloads) {
+        // Extra server-leaf SANs (the core appliance - group DESIGN.md
+        // §3.3): comma-separated DNS names/IPs appended to the Valkey and
+        // PostgreSQL server leaves. The appliance's infra containers are
+        // dialed by their compose service names inside its bridge netns,
+        // so `verify-full` needs those names in the SANs (the localhost
+        // defaults cover the single-machine plane only). A leaf that is
+        // missing a requested SAN is re-minted (infra_tls checks coverage).
+        let infra_sans: Vec<String> = args
+            .iter()
+            .find_map(|a| a.strip_prefix("--infra-sans="))
+            .map(|s| {
+                s.split(',')
+                    .map(|w| w.trim().to_string())
+                    .filter(|w| !w.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default();
+        match sentin8_acme_server::infra_tls::ensure_infra_tls(&config, &workloads, &infra_sans) {
             Ok(report) => {
                 let (server, server_minted) = &report.server_cert;
                 let (control, control_minted) = &report.control_cert;

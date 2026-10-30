@@ -97,9 +97,24 @@ const RENEWAL_WINDOW_DAYS: i64 = 14;
 pub fn ensure_infra_tls(
     config: &AcmeConfig,
     mint_workloads: &[String],
+    extra_server_sans: &[String],
 ) -> Result<EnsureReport, String> {
     let dir = infra_tls_dir();
     std::fs::create_dir_all(&dir).map_err(|e| format!("create {}: {e}", dir.display()))?;
+    // The server-leaf SAN list: the loopback defaults (single-machine
+    // plane - the operator DSNs dial localhost) plus the operator-declared
+    // extras (the core appliance's compose service names - group DESIGN.md
+    // §3.3). Deduped, order-stable.
+    let mut server_sans: Vec<String> = vec![
+        "localhost".to_string(),
+        "127.0.0.1".to_string(),
+        "::1".to_string(),
+    ];
+    for san in extra_server_sans {
+        if !server_sans.contains(san) {
+            server_sans.push(san.clone());
+        }
+    }
     // Publish the PUBLIC CA chain next to the material - compose mounts it
     // read-only into the Valkey container (`tls-ca-cert-file`). Both sides
     // need it: the server verifies client certs against it, and workload
@@ -128,11 +143,7 @@ pub fn ensure_infra_tls(
             &dir,
             "valkey-server",
             "infra-valkey",
-            &[
-                "localhost".to_string(),
-                "127.0.0.1".to_string(),
-                "::1".to_string(),
-            ],
+            &server_sans,
         )?,
         control_cert: ensure_client_leaf(config, &dir, "valkey-control", "m2m-valkey-control")?,
         admin_cert: ensure_client_leaf(config, &dir, "valkey-admin", "m2m-valkey-admin")?,
@@ -154,11 +165,7 @@ pub fn ensure_infra_tls(
             &dir,
             "postgres-server",
             "infra-postgres",
-            &[
-                "localhost".to_string(),
-                "127.0.0.1".to_string(),
-                "::1".to_string(),
-            ],
+            &server_sans,
         )?,
         postgres_ops_cert: ensure_client_leaf(config, &dir, "postgres-ops", "m2m-postgres-ops")?,
         // The TLS-only HBA + the identity map seed. Enroll appends the
@@ -277,7 +284,7 @@ fn ensure_leaf(
 ) -> Result<(PathBuf, bool), String> {
     let cert_path = dir.join(format!("{base}.crt"));
     let key_path = dir.join(format!("{base}.key"));
-    if leaf_is_valid(&cert_path) {
+    if leaf_is_valid(&cert_path) && leaf_covers_sans(&cert_path, sans) {
         return Ok((cert_path, false));
     }
     let ca = CaHierarchy::ensure(config)?;
@@ -401,6 +408,27 @@ fn leaf_is_valid(cert_path: &Path) -> bool {
         }
         None => false,
     }
+}
+
+/// Whether the leaf's SAN list covers every requested name (the
+/// `--infra-sans` reuse contract): a valid, unexpired leaf that is MISSING
+/// a requested SAN must be re-minted, not reused - the appliance dials the
+/// infra by compose service name and `verify-full` fails the handshake on
+/// an absent SAN. SAN parsing is textual (the Subject Alternative Name
+/// extension's DNS/IP lines) - no full X.509 parse needed for coverage.
+fn leaf_covers_sans(cert_path: &Path, sans: &[String]) -> bool {
+    if sans.is_empty() {
+        return true;
+    }
+    let Ok(pem) = std::fs::read_to_string(cert_path) else {
+        return false;
+    };
+    sans.iter().all(|want| {
+        let needle_dns = format!("DNS:{want}");
+        let needle_ip = format!("IP Address:{want}");
+        let needle_ip2 = format!("IP:{want}");
+        pem.contains(&needle_dns) || pem.contains(&needle_ip) || pem.contains(&needle_ip2)
+    })
 }
 
 /// 0600 - the `.key` files are private keys; the `.crt` files pair with
