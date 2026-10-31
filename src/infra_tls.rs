@@ -40,8 +40,15 @@ use crate::config::AcmeConfig;
 /// DB/Valkey/auth URLs) are inert placeholders - this mode touches no
 /// network and no database, so they are never read.
 pub fn offline_config() -> AcmeConfig {
-    let data_dir =
-        std::env::var("SENTIN8_ACME_DATA_DIR").unwrap_or_else(|_| sentin8::config::tls_dir());
+    // PQCA-1: same per-mode derivation as AcmeConfig::from_env - the
+    // offline (infra-tls) mint MUST target the same mode dir the running
+    // service reads, or the infra leaves and the service leaves would
+    // diverge between stores.
+    let data_dir = {
+        let base = std::env::var("SENTIN8_ACME_DATA_DIR")
+            .unwrap_or_else(|_| sentin8::config::tls_dir());
+        sentin8::config::acme_data_dir_mode(&base)
+    };
     AcmeConfig {
         port: 0,
         data_dir: PathBuf::from(data_dir),

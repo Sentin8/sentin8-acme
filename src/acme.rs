@@ -717,6 +717,7 @@ pub async fn finalize_order(
     // Write metadata (local signing)
     let meta = serde_json::json!({
         "domain": domain,
+        "pq_mode": sentin8::config::pq_mode(),
         "issued_at": now_ts(),
         "expires_at": now_ts() + state.config.leaf_cert_days * 86400,
         "serial": cert_id,
@@ -1154,6 +1155,7 @@ pub async fn issue_client_cert(
     let meta = serde_json::json!({
         "domain": cn,
         "kind": "client",
+        "pq_mode": sentin8::config::pq_mode(),
         "issued_at": now_ts(),
         "expires_at": now_ts() + days * 86400,
         "serial": cert_id,
@@ -1227,18 +1229,26 @@ fn now_ts() -> u64 {
 }
 
 /// Reuse-before-mint lookup (DESIGN §4.0): find the newest
-/// non-revoked, unexpired certificate in the store whose `domain` matches
-/// exactly. Returns `(cert_id, domain)` on a hit.
+/// non-revoked, unexpired certificate in the store whose `domain`
+/// matches exactly and whose `pq_mode` matches the ACTIVE transport
+/// posture (PQCA-1). Returns `(cert_id, domain)` on a hit.
 ///
 /// The scan reads only `metadata.json` files (small, no PEM parse) and
 /// returns the NEWEST hit by `issued_at` so repeated reuses converge on
 /// one certificate per domain instead of rotating among stale twins.
-/// A store without a match costs one directory walk.
+/// A store without a match costs one directory walk. The `pq_mode`
+/// filter is the metadata-level defense: the per-mode data dir already
+/// isolates the stores (a foreign leaf is normally unreachable), but a
+/// hand-copied directory or a pre-PQCA store would otherwise resurface
+/// a foreign-family leaf - the filter rejects it and forces a fresh
+/// mint. Records WITHOUT a `pq_mode` (legacy stores) are treated as
+/// `classical` - the only posture that predated the field.
 fn find_reusable_cert(
     config: &crate::config::AcmeConfig,
     domain: &str,
 ) -> Option<(String, String)> {
     let now = now_ts();
+    let active_mode = sentin8::config::pq_mode();
     let dir = config.certs_dir();
     let mut best: Option<(u64, String)> = None;
     for entry in std::fs::read_dir(&dir).ok()?.flatten() {
@@ -1251,6 +1261,13 @@ fn find_reusable_cert(
         };
         if meta.get("domain").and_then(|d| d.as_str()) != Some(domain) {
             continue;
+        }
+        let cert_mode = meta
+            .get("pq_mode")
+            .and_then(|m| m.as_str())
+            .unwrap_or("classical");
+        if cert_mode != active_mode {
+            continue; // minted for a different transport posture - never reused
         }
         if meta.get("revoked").and_then(|r| r.as_bool()).unwrap_or(false) {
             continue; // a revoked cert is never reused - force a fresh mint
@@ -1479,6 +1496,7 @@ async fn relay_finalize_order(
 
     let meta = serde_json::json!({
         "domain": domain,
+        "pq_mode": sentin8::config::pq_mode(),
         "issued_at": now_ts(),
         "expires_at": now_ts() + state.config.leaf_cert_days * 86400,
         "serial": cert_id,
@@ -1663,6 +1681,7 @@ pub async fn sweep(state: &AppState) -> usize {
             std::fs::write(state.config.cert_key_path(&new_id), &key_pem).ok();
             let meta = serde_json::json!({
                 "domain": domain,
+        "pq_mode": sentin8::config::pq_mode(),
                 "issued_at": now_ts(),
                 "expires_at": now_ts() + state.config.leaf_cert_days * 86400,
                 "serial": new_id,

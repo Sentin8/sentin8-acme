@@ -64,8 +64,19 @@ impl AcmeConfig {
         let sentin8_domain = env::var("SENTIN8_DOMAIN").unwrap_or_else(|_| "local.sentin8.dev".into());
         // FHS: /var/lib/sentin8/tls (prod), or SENTIN8_ACME_DATA_DIR override, or
         // $HOME/.sentin8/acme (dev fallback for backward compat).
-        let data_dir =
-            env::var("SENTIN8_ACME_DATA_DIR").unwrap_or_else(|_| sentin8::config::tls_dir());
+        //
+        // PQCA-1: the data dir is PER-PQ-MODE (`{base}/{pq_mode}`) - the
+        // CA hierarchy, accounts, orders, and certificates live under
+        // the mode's own directory (acme DESIGN "Filesystem layout"). A
+        // mode flip populates the other directory from scratch; a leaf
+        // minted for another posture is unreachable by construction. Host
+        // and appliance share the base mount and the same operator .env,
+        // so both planes resolve the SAME mode dir.
+        let data_dir = {
+            let base = env::var("SENTIN8_ACME_DATA_DIR")
+                .unwrap_or_else(|_| sentin8::config::tls_dir());
+            sentin8::config::acme_data_dir_mode(&base)
+        };
         Self {
             port: env::var("SENTIN8_ACME_PORT")
                 .expect("SENTIN8_ACME_PORT must be set by captain")

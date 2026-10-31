@@ -41,6 +41,20 @@ chrono = { version = "0.4", features = ["serde"] }
 thiserror = "1"
 anyhow = "1"
 rcgen = "0.13"
+# PQCA-2: the PQ cert families build X.509 through the RustCrypto builder
+# (rcgen cannot carry PQ signature algorithms). ml-dsa signs
+# intermediate/leaves + handshakes; slh-dsa signs the root (the
+# security-anchor shelf, small + slow but minted once per CA lifetime).
+x509-cert = { version = "0.3", default-features = false, features = ["builder", "pem"] }
+ml-dsa = { version = "0.1", features = ["getrandom", "pkcs8", "zeroize"] }
+slh-dsa = { version = "0.2.0-rc.5", features = ["alloc", "zeroize"] }
+der = { version = "0.8", features = ["alloc", "std"] }
+const-oid = { version = "0.10", features = ["db"] }
+# The PQ crates agree on rand_core 0.10 (crypto-common re-export); the
+# classical rand 0.8 stays for the pre-existing seed uses.
+rand_core = "0.10"
+getrandom = "0.3"
+pkcs8 = { version = "0.11", features = ["alloc", "pem"] }
 rustls = { version = "0.23", features = ["std", "tls12", "logging"], default-features = false }
 rustls-graviola = "0.4"
 rustls-pemfile = "2"

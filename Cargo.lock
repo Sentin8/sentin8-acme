@@ -182,7 +182,7 @@ dependencies = [
  "fastrand",
  "hex",
  "http 1.5.0",
- "sha1",
+ "sha1 0.10.7",
  "time",
  "tokio",
  "tracing",
@@ -1201,7 +1201,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e7c1832837b905bbfb5101e07cc24c8deddf52f93225eee6ead5f4d63d53ddcb"
 dependencies = [
  "const-oid 0.9.6",
- "pem-rfc7468",
+ "pem-rfc7468 0.7.0",
  "zeroize",
 ]
 
@@ -1212,7 +1212,21 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a878c850e9e421b20262e9b41f9c860e4785fa07541c266b62ff9d1ef998a80a"
 dependencies = [
  "const-oid 0.10.2",
+ "der_derive",
+ "flagset",
+ "pem-rfc7468 1.0.0",
  "zeroize",
+]
+
+[[package]]
+name = "der_derive"
+version = "0.8.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "59600e2c2d636fde9b65e99cc6445ac770c63d3628195ff39932b8d6d7409903"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]
@@ -1344,7 +1358,7 @@ dependencies = [
  "ff",
  "generic-array",
  "group",
- "pem-rfc7468",
+ "pem-rfc7468 0.7.0",
  "pkcs8 0.10.2",
  "rand_core 0.6.4",
  "sec1",
@@ -1469,6 +1483,12 @@ name = "fixedbitset"
 version = "0.5.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d674e81391d1e1ab681a28d99df07927c6d4aa5b027d7da16ba32d1d21ecd99"
+
+[[package]]
+name = "flagset"
+version = "0.4.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b7ac824320a75a52197e8f2d787f6a38b6718bb6897a35142d749af3c0e8f4fe"
 
 [[package]]
 name = "flate2"
@@ -2444,7 +2464,7 @@ dependencies = [
  "pico-args",
  "regex",
  "regex-syntax",
- "sha3",
+ "sha3 0.10.9",
  "string_cache",
  "term",
  "unicode-xid",
@@ -3027,6 +3047,15 @@ name = "pem-rfc7468"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "88b39c9bfcfc231068454382784bb460aae594343fb030d46e9f50a645418412"
+dependencies = [
+ "base64ct",
+]
+
+[[package]]
+name = "pem-rfc7468"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a6305423e0e7738146434843d1694d621cce767262b2a86910beab705e4493d9"
 dependencies = [
  "base64ct",
 ]
@@ -3932,7 +3961,7 @@ checksum = "8a7852d02fc848982e0c167ef163aaff9cd91dc640ba85e263cb1ce46fae51cd"
 [[package]]
 name = "sentin8"
 version = "0.1.0"
-source = "git+https://github.com/Sentin8/sentin8-sdk?tag=sdk-v0.6.21#9aca849984c87a0c82f997676842c94e7c995c57"
+source = "git+https://github.com/Sentin8/sentin8-sdk?tag=sdk-v0.6.21#4d90d6cd3dedb63231b99b9e461456f9da5acb1c"
 dependencies = [
  "sentin8-audit",
  "sentin8-auth-client",
@@ -3970,12 +3999,18 @@ dependencies = [
  "base64 0.22.1",
  "base64ct",
  "chrono",
+ "const-oid 0.10.2",
+ "der 0.8.2",
  "dotenvy",
+ "getrandom 0.3.4",
  "hex",
  "hyper",
  "hyper-util",
+ "ml-dsa",
  "p256",
+ "pkcs8 0.11.0",
  "rand 0.8.8",
+ "rand_core 0.10.1",
  "rcgen",
  "reqwest 0.12.28",
  "rustls",
@@ -3986,6 +4021,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "slh-dsa",
  "sqlx",
  "thiserror 1.0.69",
  "time",
@@ -3998,12 +4034,13 @@ dependencies = [
  "utoipa",
  "uuid",
  "valkey-glide",
+ "x509-cert",
 ]
 
 [[package]]
 name = "sentin8-audit"
 version = "0.1.0"
-source = "git+https://github.com/Sentin8/sentin8-sdk?tag=sdk-v0.6.21#9aca849984c87a0c82f997676842c94e7c995c57"
+source = "git+https://github.com/Sentin8/sentin8-sdk?tag=sdk-v0.6.21#4d90d6cd3dedb63231b99b9e461456f9da5acb1c"
 dependencies = [
  "async-trait",
  "chrono",
@@ -4022,7 +4059,7 @@ dependencies = [
 [[package]]
 name = "sentin8-auth-client"
 version = "0.1.0"
-source = "git+https://github.com/Sentin8/sentin8-sdk?tag=sdk-v0.6.21#9aca849984c87a0c82f997676842c94e7c995c57"
+source = "git+https://github.com/Sentin8/sentin8-sdk?tag=sdk-v0.6.21#4d90d6cd3dedb63231b99b9e461456f9da5acb1c"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -4048,12 +4085,12 @@ dependencies = [
 [[package]]
 name = "sentin8-build-info"
 version = "0.1.0"
-source = "git+https://github.com/Sentin8/sentin8-sdk?tag=sdk-v0.6.21#9aca849984c87a0c82f997676842c94e7c995c57"
+source = "git+https://github.com/Sentin8/sentin8-sdk?tag=sdk-v0.6.21#4d90d6cd3dedb63231b99b9e461456f9da5acb1c"
 
 [[package]]
 name = "sentin8-bus-client"
 version = "0.1.0"
-source = "git+https://github.com/Sentin8/sentin8-sdk?tag=sdk-v0.6.21#9aca849984c87a0c82f997676842c94e7c995c57"
+source = "git+https://github.com/Sentin8/sentin8-sdk?tag=sdk-v0.6.21#4d90d6cd3dedb63231b99b9e461456f9da5acb1c"
 dependencies = [
  "chrono",
  "reqwest 0.12.28",
@@ -4072,7 +4109,7 @@ dependencies = [
 [[package]]
 name = "sentin8-bus-contracts"
 version = "0.1.0"
-source = "git+https://github.com/Sentin8/sentin8-sdk?tag=sdk-v0.6.21#9aca849984c87a0c82f997676842c94e7c995c57"
+source = "git+https://github.com/Sentin8/sentin8-sdk?tag=sdk-v0.6.21#4d90d6cd3dedb63231b99b9e461456f9da5acb1c"
 dependencies = [
  "chrono",
  "serde",
@@ -4084,7 +4121,7 @@ dependencies = [
 [[package]]
 name = "sentin8-config"
 version = "0.1.0"
-source = "git+https://github.com/Sentin8/sentin8-sdk?tag=sdk-v0.6.21#9aca849984c87a0c82f997676842c94e7c995c57"
+source = "git+https://github.com/Sentin8/sentin8-sdk?tag=sdk-v0.6.21#4d90d6cd3dedb63231b99b9e461456f9da5acb1c"
 dependencies = [
  "dotenvy",
  "figment",
@@ -4099,7 +4136,7 @@ dependencies = [
 [[package]]
 name = "sentin8-crypto"
 version = "0.1.0"
-source = "git+https://github.com/Sentin8/sentin8-sdk?tag=sdk-v0.6.21#9aca849984c87a0c82f997676842c94e7c995c57"
+source = "git+https://github.com/Sentin8/sentin8-sdk?tag=sdk-v0.6.21#4d90d6cd3dedb63231b99b9e461456f9da5acb1c"
 dependencies = [
  "aes-gcm",
  "base64 0.22.1",
@@ -4112,7 +4149,7 @@ dependencies = [
 [[package]]
 name = "sentin8-errors"
 version = "0.1.0"
-source = "git+https://github.com/Sentin8/sentin8-sdk?tag=sdk-v0.6.21#9aca849984c87a0c82f997676842c94e7c995c57"
+source = "git+https://github.com/Sentin8/sentin8-sdk?tag=sdk-v0.6.21#4d90d6cd3dedb63231b99b9e461456f9da5acb1c"
 dependencies = [
  "anyhow",
  "axum",
@@ -4126,7 +4163,7 @@ dependencies = [
 [[package]]
 name = "sentin8-fapiclient"
 version = "0.1.0"
-source = "git+https://github.com/Sentin8/sentin8-sdk?tag=sdk-v0.6.21#9aca849984c87a0c82f997676842c94e7c995c57"
+source = "git+https://github.com/Sentin8/sentin8-sdk?tag=sdk-v0.6.21#4d90d6cd3dedb63231b99b9e461456f9da5acb1c"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -4150,7 +4187,7 @@ dependencies = [
 [[package]]
 name = "sentin8-idempotency"
 version = "0.1.0"
-source = "git+https://github.com/Sentin8/sentin8-sdk?tag=sdk-v0.6.21#9aca849984c87a0c82f997676842c94e7c995c57"
+source = "git+https://github.com/Sentin8/sentin8-sdk?tag=sdk-v0.6.21#4d90d6cd3dedb63231b99b9e461456f9da5acb1c"
 dependencies = [
  "async-trait",
  "axum",
@@ -4165,7 +4202,7 @@ dependencies = [
 [[package]]
 name = "sentin8-jwt"
 version = "0.1.0"
-source = "git+https://github.com/Sentin8/sentin8-sdk?tag=sdk-v0.6.21#9aca849984c87a0c82f997676842c94e7c995c57"
+source = "git+https://github.com/Sentin8/sentin8-sdk?tag=sdk-v0.6.21#4d90d6cd3dedb63231b99b9e461456f9da5acb1c"
 dependencies = [
  "base64 0.22.1",
  "serde",
@@ -4175,7 +4212,7 @@ dependencies = [
 [[package]]
 name = "sentin8-m2m"
 version = "0.1.0"
-source = "git+https://github.com/Sentin8/sentin8-sdk?tag=sdk-v0.6.21#9aca849984c87a0c82f997676842c94e7c995c57"
+source = "git+https://github.com/Sentin8/sentin8-sdk?tag=sdk-v0.6.21#4d90d6cd3dedb63231b99b9e461456f9da5acb1c"
 dependencies = [
  "base64 0.22.1",
  "chrono",
@@ -4195,7 +4232,7 @@ dependencies = [
 [[package]]
 name = "sentin8-membus"
 version = "0.1.0"
-source = "git+https://github.com/Sentin8/sentin8-sdk?tag=sdk-v0.6.21#9aca849984c87a0c82f997676842c94e7c995c57"
+source = "git+https://github.com/Sentin8/sentin8-sdk?tag=sdk-v0.6.21#4d90d6cd3dedb63231b99b9e461456f9da5acb1c"
 dependencies = [
  "futures-util",
  "sentin8-config",
@@ -4212,7 +4249,7 @@ dependencies = [
 [[package]]
 name = "sentin8-middleware"
 version = "0.1.0"
-source = "git+https://github.com/Sentin8/sentin8-sdk?tag=sdk-v0.6.21#9aca849984c87a0c82f997676842c94e7c995c57"
+source = "git+https://github.com/Sentin8/sentin8-sdk?tag=sdk-v0.6.21#4d90d6cd3dedb63231b99b9e461456f9da5acb1c"
 dependencies = [
  "axum",
  "chrono",
@@ -4242,7 +4279,7 @@ dependencies = [
 [[package]]
 name = "sentin8-openapi"
 version = "0.1.0"
-source = "git+https://github.com/Sentin8/sentin8-sdk?tag=sdk-v0.6.21#9aca849984c87a0c82f997676842c94e7c995c57"
+source = "git+https://github.com/Sentin8/sentin8-sdk?tag=sdk-v0.6.21#4d90d6cd3dedb63231b99b9e461456f9da5acb1c"
 dependencies = [
  "axum",
  "utoipa",
@@ -4251,7 +4288,7 @@ dependencies = [
 [[package]]
 name = "sentin8-outbox"
 version = "0.1.0"
-source = "git+https://github.com/Sentin8/sentin8-sdk?tag=sdk-v0.6.21#9aca849984c87a0c82f997676842c94e7c995c57"
+source = "git+https://github.com/Sentin8/sentin8-sdk?tag=sdk-v0.6.21#4d90d6cd3dedb63231b99b9e461456f9da5acb1c"
 dependencies = [
  "anyhow",
  "sentin8-bus-client",
@@ -4268,7 +4305,7 @@ dependencies = [
 [[package]]
 name = "sentin8-registration"
 version = "0.1.0"
-source = "git+https://github.com/Sentin8/sentin8-sdk?tag=sdk-v0.6.21#9aca849984c87a0c82f997676842c94e7c995c57"
+source = "git+https://github.com/Sentin8/sentin8-sdk?tag=sdk-v0.6.21#4d90d6cd3dedb63231b99b9e461456f9da5acb1c"
 dependencies = [
  "anyhow",
  "serde",
@@ -4279,7 +4316,7 @@ dependencies = [
 [[package]]
 name = "sentin8-rfw"
 version = "0.1.0"
-source = "git+https://github.com/Sentin8/sentin8-sdk?tag=sdk-v0.6.21#9aca849984c87a0c82f997676842c94e7c995c57"
+source = "git+https://github.com/Sentin8/sentin8-sdk?tag=sdk-v0.6.21#4d90d6cd3dedb63231b99b9e461456f9da5acb1c"
 dependencies = [
  "serde",
  "serde_json",
@@ -4289,7 +4326,7 @@ dependencies = [
 [[package]]
 name = "sentin8-service-discovery"
 version = "0.1.0"
-source = "git+https://github.com/Sentin8/sentin8-sdk?tag=sdk-v0.6.21#9aca849984c87a0c82f997676842c94e7c995c57"
+source = "git+https://github.com/Sentin8/sentin8-sdk?tag=sdk-v0.6.21#4d90d6cd3dedb63231b99b9e461456f9da5acb1c"
 dependencies = [
  "chrono",
  "futures-util",
@@ -4305,7 +4342,7 @@ dependencies = [
 [[package]]
 name = "sentin8-shell"
 version = "0.1.0"
-source = "git+https://github.com/Sentin8/sentin8-sdk?tag=sdk-v0.6.21#9aca849984c87a0c82f997676842c94e7c995c57"
+source = "git+https://github.com/Sentin8/sentin8-sdk?tag=sdk-v0.6.21#4d90d6cd3dedb63231b99b9e461456f9da5acb1c"
 dependencies = [
  "anyhow",
  "axum",
@@ -4335,7 +4372,7 @@ dependencies = [
 [[package]]
 name = "sentin8-shield"
 version = "0.1.0"
-source = "git+https://github.com/Sentin8/sentin8-sdk?tag=sdk-v0.6.21#9aca849984c87a0c82f997676842c94e7c995c57"
+source = "git+https://github.com/Sentin8/sentin8-sdk?tag=sdk-v0.6.21#4d90d6cd3dedb63231b99b9e461456f9da5acb1c"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -4366,7 +4403,7 @@ dependencies = [
 [[package]]
 name = "sentin8-tls"
 version = "0.1.0"
-source = "git+https://github.com/Sentin8/sentin8-sdk?tag=sdk-v0.6.21#9aca849984c87a0c82f997676842c94e7c995c57"
+source = "git+https://github.com/Sentin8/sentin8-sdk?tag=sdk-v0.6.21#4d90d6cd3dedb63231b99b9e461456f9da5acb1c"
 dependencies = [
  "anyhow",
  "axum",
@@ -4376,6 +4413,7 @@ dependencies = [
  "http 1.5.0",
  "hyper",
  "hyper-util",
+ "ml-dsa",
  "parking_lot",
  "rcgen",
  "reqwest 0.12.28",
@@ -4403,7 +4441,7 @@ dependencies = [
 [[package]]
 name = "sentin8-tls-contracts"
 version = "0.1.0"
-source = "git+https://github.com/Sentin8/sentin8-sdk?tag=sdk-v0.6.21#9aca849984c87a0c82f997676842c94e7c995c57"
+source = "git+https://github.com/Sentin8/sentin8-sdk?tag=sdk-v0.6.21#4d90d6cd3dedb63231b99b9e461456f9da5acb1c"
 dependencies = [
  "chrono",
  "sentin8-errors",
@@ -4415,7 +4453,7 @@ dependencies = [
 [[package]]
 name = "sentin8-workload-registry"
 version = "0.1.0"
-source = "git+https://github.com/Sentin8/sentin8-sdk?tag=sdk-v0.6.21#9aca849984c87a0c82f997676842c94e7c995c57"
+source = "git+https://github.com/Sentin8/sentin8-sdk?tag=sdk-v0.6.21#4d90d6cd3dedb63231b99b9e461456f9da5acb1c"
 dependencies = [
  "sentin8-config",
  "sentin8-middleware",
@@ -4549,6 +4587,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "sha1"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aacc4cc499359472b4abe1bf11d0b12e688af9a805fa5e3016f9a386dc2d0214"
+dependencies = [
+ "cfg-if",
+ "cpufeatures 0.3.1",
+ "digest 0.11.3",
+]
+
+[[package]]
 name = "sha1_smol"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4584,6 +4633,16 @@ checksum = "77fd7028345d415a4034cf8777cd4f8ab1851274233b45f84e3d955502d93874"
 dependencies = [
  "digest 0.10.7",
  "keccak 0.1.6",
+]
+
+[[package]]
+name = "sha3"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "be176f1a57ce4e3d31c1a166222d9768de5954f811601fb7ca06fc8203905ce1"
+dependencies = [
+ "digest 0.11.3",
+ "keccak 0.2.2",
 ]
 
 [[package]]
@@ -4687,6 +4746,26 @@ name = "slab"
 version = "0.4.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
+
+[[package]]
+name = "slh-dsa"
+version = "0.2.0-rc.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "371c02fe34044d8866ddf7cb0e8204a87ef31a39f0408bed41c4253ea9dd61ed"
+dependencies = [
+ "const-oid 0.10.2",
+ "digest 0.11.3",
+ "hmac 0.13.0",
+ "hybrid-array",
+ "pkcs8 0.11.0",
+ "rand_core 0.10.1",
+ "sha2 0.11.1",
+ "sha3 0.11.0",
+ "signature 3.0.0",
+ "typenum",
+ "zerocopy",
+ "zeroize",
+]
 
 [[package]]
 name = "smallvec"
@@ -4874,7 +4953,7 @@ dependencies = [
  "rand 0.8.8",
  "rsa",
  "serde",
- "sha1",
+ "sha1 0.10.7",
  "sha2 0.10.9",
  "smallvec",
  "sqlx-core",
@@ -6169,6 +6248,19 @@ name = "writeable"
 version = "0.6.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3ad82d2a33cdc9674dc7465672f271e096168fcdbe0f799d9e6db8c5892679dc"
+
+[[package]]
+name = "x509-cert"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "105ef4642d9cb137ef83d623d0e4bf08b8adf69e9918ca904a174adb6d3d038b"
+dependencies = [
+ "const-oid 0.10.2",
+ "der 0.8.2",
+ "sha1 0.11.0",
+ "signature 3.0.0",
+ "spki 0.8.1",
+]
 
 [[package]]
 name = "xmlparser"

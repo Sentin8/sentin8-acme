@@ -27,6 +27,7 @@ pub mod infra_tls;
 pub mod openapi;
 /// Shield (Sentin8:Policy) integration - shared bridge re-exports.
 pub mod policy;
+pub mod pq_ca;
 /// Service self-registration declarations.
 pub mod registration;
 /// Axum router and server entry points.

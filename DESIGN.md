@@ -210,17 +210,40 @@ erDiagram
     }
 ```
 
-Filesystem layout under `$SENTIN8_ACME_DATA_DIR`:
+Filesystem layout under `$SENTIN8_ACME_DATA_DIR` - **per-PQ-mode subdirectory**
+(PQCA-1): the operator sets `SENTIN8_TLS_PQ_MODE` once in the shared `.env`
+(both planes source it); the acme data dir resolves as
+`{SENTIN8_ACME_DATA_DIR}/{pq_mode}/` (`classical`, `hybrid`, or `exclusive`)
+so every minted surface - CA hierarchy, accounts, orders, certificates -
+lives in the mode's own directory. A mode flip populates the other
+directory from scratch (a fresh CA per mode) and can never serve a leaf
+minted for a different transport posture; host and appliance resolve the
+SAME mode dir (the appliance mounts the base dir), so cross-plane
+divergence is structurally impossible.
 
-| Path | Content | Protection |
+| Path (relative to `{data_dir}/{pq_mode}/`) | Content | Protection |
 |------|---------|------------|
-| `ca/root-ca.key`, `intermediate-ca.key` | CA private keys (SLH-DSA-PQ) | 0600, never distributed |
+| `ca/root-ca.key`, `intermediate-ca.key` | CA private keys (SLH-DSA-PQ in the PQ families, ECDSA P-256 in `classical`) | 0600, never distributed |
 | `ca/root-ca.crt`, `intermediate-ca.crt` | public CA certs | OS + NSS trust store install |
 | `accounts/{uuid}.json` | ACME accounts | service-only |
 | `orders/{uuid}.json`, `orders/authz-{uuid}.json` | order/authz/challenge state | service-only |
-| `certificates/{cert-id}/cert.pem`, `key.pem`, `metadata.json` | leaf + key + metadata | keys 0600 |
+| `certificates/{cert-id}/cert.pem`, `key.pem`, `metadata.json` | leaf + key + metadata (`metadata.json` records `pq_mode` - the reuse-before-mint lookup filters on it) | keys 0600 |
 | `upstream-account.json` | upstream ACME account key + kid (ES256) | 0600 |
 | `.run/bootstrap-enrollment.json.enc` (captain-owned) | sealed enrollment claim | AES-256-GCM sealed, 0600 |
+
+**CA families per mode (PQCA-2)**: the `classical` mode mints the ECDSA
+P-256 chain via `rcgen` (the exact chain dev runs today). The PQ families
+(`hybrid`, `exclusive`) mint a **post-quantum signature chain**: an
+SLH-DSA-SHA2-128s root and ML-DSA-65 intermediate + leaves, built by the
+in-repo X.509 builder (`x509-cert` + `ml-dsa`/`slh-dsa`; `rcgen` cannot
+carry PQ signature algorithms). Served TLS in these modes carries
+ML-DSA-65 handshake signatures through `sentin8-tls`'s custom
+`SigningKey`/`KeyProvider` (rustls 0.23 accepts the ML_DSA_65 scheme on
+TLS 1.3 suites) and verifies through the platform's custom
+`ServerCertVerifier`. The split-CA posture holds until every verifier in
+the mesh can parse PQ signatures: the infra plane (PostgreSQL/Valkey
+images) and browser edge stay on the `classical` chain, so `hybrid`/
+`exclusive` are opt-in plane selections, never a fleet-wide default.
 
 **Owned table - `acme.outbox`** (the service's ONLY table; FORCE-RLS'd on
 `env_id`, drained by the local post-commit relay): `id` PK, `env_id`,
