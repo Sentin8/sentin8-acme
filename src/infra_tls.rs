@@ -135,6 +135,13 @@ pub fn ensure_infra_tls(
         .map(|p| p.join("acme-ca"))
         .unwrap_or_else(|| dir.join("acme-ca"));
     std::fs::create_dir_all(&ca_dir).map_err(|e| format!("create {}: {e}", ca_dir.display()))?;
+    // ENSURE THE CA HIERARCHY FIRST (PQCA-1): the per-mode data dir starts
+    // empty on a fresh tree - `CaHierarchy::ensure` mints the root +
+    // intermediate when absent and returns them loaded. Without this the
+    // raw reads below fail before any leaf mint path can run (the
+    // chicken-and-egg of the per-mode split: the CLI pre-mint runs BEFORE
+    // the acme service ever boots).
+    let _ca = CaHierarchy::ensure(config)?;
     let root_ca_src = config.root_ca_cert_path();
     let int_ca_src = config.intermediate_ca_cert_path();
     let mut chain = std::fs::read(&root_ca_src)
