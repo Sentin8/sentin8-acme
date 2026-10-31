@@ -159,17 +159,8 @@ impl AcmeConfig {
     }
 
     /// Path of the Intermediate CA certificate.
-    /// The intermediate is PER-PQ-MODE (PQCA-1): the algorithm family
-    /// changes between classical (ECDSA) and the PQ families
-    /// (ML-DSA-65), so the intermediate lives under the mode dir while
-    /// the ROOT stays shared (the trust anchor is mode-independent - the
-    /// operator imports ONE root into the local trust store).
     pub fn intermediate_ca_cert_path(&self) -> PathBuf {
-        let mode_dir = self
-            .data_dir
-            .join(sentin8::config::pq_mode());
-        let _ = std::fs::create_dir_all(&mode_dir);
-        mode_dir.join("intermediate-ca.crt")
+        self.ca_dir().join("intermediate-ca.crt")
     }
 
     /// Path of the Intermediate CA private key (0600).
