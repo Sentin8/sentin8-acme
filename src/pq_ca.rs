@@ -97,7 +97,7 @@ impl PqCaHierarchy {
 
         // ── Root: SLH-DSA-SHA2-128s self-signed ──
         let root_key = generate_slh_root_key();
-        let root_cert = build_root_cert(&root_key, config.root_ca_days)
+        let root_cert = build_root_cert(&root_key, config)
             .map_err(|e| format!("build PQ root cert: {e}"))?;
         let root_pem = pem_encode(&root_cert.to_der().map_err(|e| format!("root DER: {e}"))?);
 
@@ -114,7 +114,7 @@ impl PqCaHierarchy {
             &intermediate_key,
             &root_cert,
             &root_key,
-            config.intermediate_ca_days,
+            config,
         )
         .map_err(|e| format!("build PQ intermediate cert: {e}"))?;
         let int_pem = pem_encode(&intermediate_cert.to_der().map_err(|e| format!("int DER: {e}"))?);
@@ -137,6 +137,9 @@ impl PqCaHierarchy {
 
     /// Mint an ML-DSA-65 server leaf (CN + SANs), signed by the
     /// intermediate. Returns `(chain_pem = leaf + intermediate, key_pem)`.
+    /// End-entity: the CABF Subscriber profile (`ca:false`,
+    /// `DigitalSignature`, EKU `serverAuth` + `ClientAuth`) - never the
+    /// Subordinate CA profile (CAMINT-1).
     pub fn sign_leaf(
         &self,
         common_name: &str,
@@ -162,18 +165,48 @@ impl PqCaHierarchy {
         let key_pem = serialize_ml_dsa_pem(&leaf_key)?;
         Ok((chain, key_pem))
     }
+
+    /// Mint an ML-DSA-65 CLIENT-auth leaf (mTLS workload identity, EKU
+    /// `ClientAuth` only), signed by the intermediate. The same profile
+    /// split the classical chain applies (`CaHierarchy::sign_client_leaf`):
+    /// Valkey's client-cert verification enforces purpose, so a
+    /// ServerAuth-only leaf is rejected with `unsupported certificate`
+    /// (alert 43). Returns `(chain_pem = leaf + intermediate, key_pem)`.
+    pub fn sign_client_leaf(
+        &self,
+        common_name: &str,
+        days: u64,
+    ) -> Result<(Vec<u8>, Vec<u8>), String> {
+        let leaf_key = ml_dsa::SigningKey::<ml_dsa::MlDsa65>::generate();
+        let leaf_cert = build_client_leaf_cert(
+            &leaf_key,
+            common_name,
+            &self.intermediate_key,
+            &parse_cert_der(&self.intermediate_cert_pem)
+                .map_err(|e| format!("parse intermediate cert: {e}"))?,
+            days,
+        )
+        .map_err(|e| format!("sign PQ client leaf: {e}"))?;
+
+        let leaf_pem = pem_encode(&leaf_cert.to_der().map_err(|e| format!("client leaf DER: {e}"))?);
+        let mut chain = leaf_pem;
+        chain.extend_from_slice(&self.intermediate_cert_pem);
+        let key_pem = serialize_ml_dsa_pem(&leaf_key)?;
+        Ok((chain, key_pem))
+    }
 }
 
 /// Build the self-signed SLH-DSA root certificate.
 fn build_root_cert(
     root_key: &SlhRootKey,
-    days: u64,
+    config: &crate::config::AcmeConfig,
 ) -> Result<x509_cert::Certificate, String> {
-    let subject = ca_name("Sentin8 Local Development PQ Root CA")?;
+    let (root_cn, _) = crate::ca::ca_subject_common_names_for(config);
+    let subject = ca_root_name(&root_cn)?;
     let profile = cabf::Root::new(false, subject).map_err(|e| format!("root profile: {e}"))?;
     let spki = spki_slh_dsa(&root_key.verifying_key())?;
     let serial = random_serial()?;
-    let validity = validity_from_days(days, "root")?;
+    let validity = validity_from_days(config.root_ca_days, "root")?;
     let builder = CertificateBuilder::new(profile, serial, validity, spki)
         .map_err(|e| format!("root builder: {e}"))?;
     builder
@@ -186,10 +219,11 @@ fn build_intermediate_cert(
     int_key: &MlDsaIntKey,
     root_cert: &x509_cert::Certificate,
     root_key: &SlhRootKey,
-    days: u64,
+    config: &crate::config::AcmeConfig,
 ) -> Result<x509_cert::Certificate, String> {
     use ml_dsa::Keypair as _;
-    let subject = ca_name("Sentin8 Local Development PQ Intermediate CA")?;
+    let (_, intermediate_cn) = crate::ca::ca_subject_common_names_for(config);
+    let subject = ca_intermediate_name(&intermediate_cn)?;
     let issuer = root_cert.tbs_certificate().subject().clone();
     let profile = cabf::tls::Subordinate {
         issuer,
@@ -200,7 +234,7 @@ fn build_intermediate_cert(
     };
     let spki = spki_ml_dsa(&int_key.verifying_key())?;
     let serial = random_serial()?;
-    let validity = validity_from_days(days, "intermediate")?;
+    let validity = validity_from_days(config.intermediate_ca_days, "intermediate")?;
     let builder = CertificateBuilder::new(profile, serial, validity, spki)
         .map_err(|e| format!("intermediate builder: {e}"))?;
     builder
@@ -208,7 +242,14 @@ fn build_intermediate_cert(
         .map_err(|e| format!("intermediate sign: {e}"))
 }
 
-/// Build an ML-DSA-65 server leaf, signed by the ML-DSA-65 intermediate.
+/// Build an ML-DSA-65 SERVER leaf, signed by the ML-DSA-65 intermediate.
+///
+/// End-entity profile: the CABF **Subscriber** (server certificate)
+/// profile - `BasicConstraints ca:false`, `keyUsage digitalSignature`,
+/// EKU `serverAuth` (+ `clientAuth`, the one leaf serves both planes for
+/// infra material; `--infra-sans` leafs are dialed as both). Never the
+/// `Subordinate` CA profile: an end-entity cert that can sign other
+/// certificates is a defect (CAMINT-1).
 fn build_leaf_cert(
     leaf_key: &MlDsaIntKey,
     common_name: &str,
@@ -217,14 +258,12 @@ fn build_leaf_cert(
     issuer_cert: &x509_cert::Certificate,
     days: u64,
 ) -> Result<x509_cert::Certificate, String> {
-    use ml_dsa::Keypair as _;
     let subject = leaf_name(common_name)?;
     let issuer = issuer_cert.tbs_certificate().subject().clone();
-    let profile = cabf::tls::Subordinate {
+    let profile = cabf::tls::Subscriber {
+        certificate_type: cabf::tls::CertificateType::domain_validated(subject, general_names(san_dns_names)?)
+            .map_err(|e| format!("server leaf DV profile: {e}"))?,
         issuer,
-        subject,
-        path_len_constraint: None,
-        emits_ocsp_response: false,
         client_auth: true,
     };
     let spki = spki_ml_dsa(&leaf_key.verifying_key())?;
@@ -232,33 +271,90 @@ fn build_leaf_cert(
     let validity = validity_from_days(days, "leaf")?;
     let mut builder = CertificateBuilder::new(profile, serial, validity, spki)
         .map_err(|e| format!("leaf builder: {e}"))?;
-    // SANs: the leaf covers the tenant hostname(s). One extension carries
-    // every DNS name (the RFC form) - hand-built: the pkix ToExtension
-    // wiring for SubjectAltName is feature-gated in this x509-cert
-    // version, so the DER is encoded here (GeneralNames ::= SEQUENCE OF
-    // GeneralName; [2] = dNSName IA5String).
-    if !san_dns_names.is_empty() {
-        let san_der;
-        let mut general_names: Vec<x509_cert::ext::pkix::name::GeneralName> = Vec::new();
-        for name in san_dns_names {
-            let ia5 = der::asn1::Ia5String::new(name.as_bytes())
-                .map_err(|e| format!("SAN ia5 {name}: {e}"))?;
-            general_names.push(x509_cert::ext::pkix::name::GeneralName::DnsName(ia5));
-        }
-        san_der = general_names.to_der().map_err(|e| format!("SAN DER: {e}"))?;
-        let ext = x509_cert::ext::Extension {
-            extn_id: <x509_cert::ext::pkix::SubjectAltName as const_oid::AssociatedOid>::OID,
-            critical: false.into(),
-            extn_value: der::asn1::OctetString::new(san_der)
-                .map_err(|e| format!("SAN octet: {e}"))?,
-        };
-        builder
-            .add_extension(ext)
-            .map_err(|e| format!("leaf SAN: {e}"))?;
-    }
+    add_san_extension(&mut builder, san_dns_names)?;
     builder
         .build::<_, ml_dsa::Signature<ml_dsa::MlDsa65>>(issuer_key)
         .map_err(|e| format!("leaf sign: {e}"))
+}
+
+/// Build an ML-DSA-65 CLIENT leaf (mTLS workload identity), signed by the
+/// ML-DSA-65 intermediate. The same Subscriber end-entity profile with
+/// the names narrowed to the CN (`DomainValidated` requires a non-empty
+/// name set; the client leaf's identity IS the CN - Valkey maps
+/// CN → ACL user, PostgreSQL maps CN → role through `pgm`).
+fn build_client_leaf_cert(
+    leaf_key: &MlDsaIntKey,
+    common_name: &str,
+    issuer_key: &MlDsaIntKey,
+    issuer_cert: &x509_cert::Certificate,
+    days: u64,
+) -> Result<x509_cert::Certificate, String> {
+    let subject = leaf_name(common_name)?;
+    let issuer = issuer_cert.tbs_certificate().subject().clone();
+    let profile = cabf::tls::Subscriber {
+        certificate_type: cabf::tls::CertificateType::domain_validated(
+            subject,
+            general_names(std::slice::from_ref(&common_name.to_string()))?,
+        )
+        .map_err(|e| format!("client leaf DV profile: {e}"))?,
+        issuer,
+        client_auth: true,
+    };
+    let spki = spki_ml_dsa(&leaf_key.verifying_key())?;
+    let serial = random_serial()?;
+    let validity = validity_from_days(days, "client leaf")?;
+    let mut builder = CertificateBuilder::new(profile, serial, validity, spki)
+        .map_err(|e| format!("client leaf builder: {e}"))?;
+    // The client leaf's SAN carries the CN (its identity - Valkey maps
+    // CN → ACL user, PostgreSQL maps CN → role through `pgm`).
+    add_san_extension(&mut builder, std::slice::from_ref(&common_name.to_string()))?;
+    builder
+        .build::<_, ml_dsa::Signature<ml_dsa::MlDsa65>>(issuer_key)
+        .map_err(|e| format!("client leaf sign: {e}"))
+}
+
+/// `GeneralNames` from a list of DNS names (empty input yields the empty
+/// set - the profile's DV names and this extension must agree; the
+/// client path always passes the CN).
+fn general_names(
+    names: &[String],
+) -> Result<x509_cert::ext::pkix::name::GeneralNames, String> {
+    let mut gn = Vec::new();
+    for name in names {
+        let ia5 = der::asn1::Ia5String::new(name.as_bytes())
+            .map_err(|e| format!("SAN ia5 {name}: {e}"))?;
+        gn.push(x509_cert::ext::pkix::name::GeneralName::DnsName(ia5));
+    }
+    Ok(gn)
+}
+
+/// Add the subjectAltName extension (DNS names) to a leaf builder. The
+/// `x509-cert` Subscriber profile's `subjectAltName MUST` is a TODO in
+/// this version - the extension is hand-built (GeneralNames ::= SEQUENCE
+/// OF GeneralName; [2] = dNSName IA5String), same DER shape the
+/// platform's verifier parses.
+fn add_san_extension<P>(
+    builder: &mut CertificateBuilder<P>,
+    names: &[String],
+) -> Result<(), String>
+where
+    P: x509_cert::builder::Profile,
+{
+    if names.is_empty() {
+        return Ok(());
+    }
+    let gn = general_names(names)?;
+    let san_der = x509_cert::ext::pkix::name::GeneralNames::to_der(&gn)
+        .map_err(|e| format!("SAN DER: {e}"))?;
+    let ext = x509_cert::ext::Extension {
+        extn_id: <x509_cert::ext::pkix::SubjectAltName as const_oid::AssociatedOid>::OID,
+        critical: false.into(),
+        extn_value: der::asn1::OctetString::new(san_der)
+            .map_err(|e| format!("SAN octet: {e}"))?,
+    };
+    builder
+        .add_extension(ext)
+        .map_err(|e| format!("leaf SAN: {e}"))
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────
@@ -284,9 +380,22 @@ fn validity_from_days(days: u64, what: &str) -> Result<Validity, String> {
     ))
 }
 
-/// A CABF-conformant CA name (C/O/CN are all required by the Root profile).
-fn ca_name(cn: &str) -> Result<Name, String> {
-    Name::from_str(&format!("CN={cn},O=Sentin8,C=US")).map_err(|e| format!("CA name: {e}"))
+/// A CABF-conformant ROOT CA name (CABF BR 7.1.2.10.2: C/O/CN required,
+/// and the root subject admits NO organizationalUnitName - the builder's
+/// `cabf::Root` profile rejects one). Country is Canada (`C=CA`,
+/// ISO 3166-1). PQCA-3: the CN is mode-derived
+/// (`ca_subject_common_names`).
+fn ca_root_name(cn: &str) -> Result<Name, String> {
+    Name::from_str(&format!("CN={cn},O=Sentin8,C=CA")).map_err(|e| format!("CA name: {e}"))
+}
+
+/// An INTERMEDIATE CA name: the same CABF shape plus the issuing service
+/// as the Organizational Unit (`OU=Sentin8:ACME`, PQCA-3 - admitted on
+/// non-root CA subjects). PQCA-3: the CN is mode-derived
+/// (`ca_subject_common_names`).
+fn ca_intermediate_name(cn: &str) -> Result<Name, String> {
+    Name::from_str(&format!("CN={cn},OU=Sentin8:ACME,O=Sentin8,C=CA"))
+        .map_err(|e| format!("CA name: {e}"))
 }
 
 /// A leaf subject name (no CA-name constraints on end-entity certs).

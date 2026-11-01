@@ -63,18 +63,22 @@ pub async fn get_admin_ui(
     )
     .await?;
     let proxy_mode = !state.config.upstream_directory_url.is_empty();
+    let (root_cn, intermediate_cn) = crate::ca::ca_subject_common_names();
     let def = match page.as_str() {
         "overview" => AdminPage::new("CA Overview")
             .widget(card(
                 "Root CA",
                 &format!(
-                    "Subject: Sentin8 Local Development CA\nFingerprint: {}",
+                    "Subject: CN={root_cn}, O=Sentin8, C=CA\nFingerprint: {}",
                     state.ca.root_ca_fingerprint()
                 ),
             ))
             .widget(card(
                 "Intermediate CA",
-                "Signed by Root CA (5-year validity). Signs all leaf certificates.",
+                &format!(
+                    "Subject: CN={intermediate_cn}, OU=Sentin8:ACME, O=Sentin8, C=CA\n\
+                     Signed by Root CA (5-year validity). Signs all leaf certificates."
+                ),
             ))
             .widget(card(
                 "Issued Certificates",

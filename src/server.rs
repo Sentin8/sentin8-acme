@@ -200,9 +200,17 @@ pub async fn serve(config: AcmeConfig) -> anyhow::Result<()> {
     let addr = format!("0.0.0.0:{}", config.port);
     tracing::info!("acme listening on {addr}");
 
-    // Generate or load CA hierarchy
-    let ca =
-        crate::ca::CaHierarchy::ensure(&config).map_err(|e| anyhow::anyhow!("CA init: {e}"))?;
+    // Generate or load the ACTIVE mode's CA family (CAMINT-1: classical →
+    // ECDSA `CaHierarchy`, hybrid/exclusive → PQ `PqCaHierarchy` - the
+    // service-plane leafs this instance serves must match the mode).
+    // PQCLIENT-2: the family is served AS RESOLVED - `AppState.ca`
+    // dispatches every runtime mint/sign call to the family's
+    // hierarchy, so an exclusive-mode instance mints and serves
+    // ML-DSA leafs end to end (the acme service plane terminates
+    // through sentin8-tls, which presents ML-DSA keys and verifies
+    // PQ chains through PQCLIENT-1's provider).
+    let ca = crate::ca::CaFamily::ensure(&config)
+        .map_err(|e| anyhow::anyhow!("CA init: {e}"))?;
 
     // Install CA into trust store (best-effort)
     if config.install_trust_store {

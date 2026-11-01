@@ -125,7 +125,12 @@ graph TD
   + key) and Intermediate (`rcgen::Certificate` + key), plus the on-disk
   PEM bytes of both. The rcgen objects are *reconstructions* used only as
   issuers when signing; the stored PEM bytes carry the real signatures and
-  are what gets served or installed.
+  are what gets served or installed. Subject names are mode-derived
+  (`ca_subject_common_names()`, PQCA-3): `CN=Sentin8 {Mode} Root CA` for
+  the root (no OU, per the CABF root profile) and
+  `CN=Sentin8 {Mode} Intermediate CA, OU=Sentin8:ACME` for the
+  intermediate - one name per PQ mode, shared by the classical and PQ
+  mint paths.
 - **`AppState`** - config, CA hierarchy, issuer base URL, in-memory nonce
   store (`RwLock<HashMap>`), DB pool, Shield engine, and the shared
   Shield policy-admin state.
@@ -150,7 +155,18 @@ graph TD
   TLS-only `pg_hba.conf`/`pg_ident.conf` seeds (group DESIGN.md §3.1,
   §3.2). `make infra-tls` runs this mode before `make infra-up`: the
   TLS-only data planes cannot boot without their server leaves, and the
-  operator identities must exist before the first enroll.
+  operator identities must exist before the first enroll. The mint is
+  family-aware (PQCA-2): under `classical` the leafs mint through the
+  ECDSA chain, under `hybrid`/`exclusive` through the PQ chain
+  (`ensure_ca_family` dispatches), and a still-valid leaf of the wrong
+  signature family is re-minted, never reused.
+- **Offline CA mint (`--ensure-ca`, CAMINT-1).** The binary also serves
+  as the operator's CA-plane CLI: `make ca-tls` (or
+  `sentin8-acme --ensure-ca --modes=classical,hybrid,exclusive`)
+  pre-stages the root + intermediate for every PQ mode in one shot.
+  CA stores are per-mode directory scoped (PQCA-1), so multi-mode ensure
+  is safe; `--ensure-infra-tls` stays active-mode only (the infra leafs
+  are singletons at fixed paths).
 - **Reconstructed rcgen issuers + stored PEM bytes.** rcgen cannot
   re-sign an existing certificate, so loading reconstructs
   `Certificate` objects for signing - which are self-signed and MUST
@@ -208,6 +224,10 @@ graph TD
   - The Intermediate CA MUST always be served from the stored PEM bytes
     (signed by Root); the rcgen reconstruction would break every
     client-side chain verification.
+  - CA subjects are mode-namespaced (PQCA-3): the root CN carries the
+    mint mode and NO OU (CABF BR 7.1.2.10.2); the intermediate CN
+    carries the mint mode plus `OU=Sentin8:ACME`. Two distinct CA
+    certificates never share one subject.
   - The bootstrap-enrollment channel may mint ONLY client certificates
     (`m2m-*` CN prefix) - never TLS server leafs; the CN prefix is the
     scope boundary.

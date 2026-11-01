@@ -32,8 +32,74 @@
 
 use std::path::{Path, PathBuf};
 
-use crate::ca::CaHierarchy;
+use crate::ca::CaFamily;
 use crate::config::AcmeConfig;
+
+/// Ensure the CA hierarchy (root + intermediate) for each requested mode
+/// - the `--ensure-ca` operator surface (CAMINT-1). Default is the
+/// ACTIVE mode; `--modes=classical,hybrid,exclusive` pre-stages every
+/// family in one shot. Multi-mode is safe because CA material is
+/// per-mode directory scoped (PQCA-1): one mode's ensure never touches
+/// another's store. Idempotent per mode (`CaFamily::ensure_mode` is
+/// load-if-exists, else mint). Offline: no network, no database, no
+/// trust-store install (the running acme service owns that at boot).
+///
+/// Returns one `(mode, root_cert_path, intermediate_cert_path, minted?)`
+/// per requested mode, in request order.
+pub fn ensure_ca(
+    config: &AcmeConfig,
+    modes: &[String],
+) -> Result<Vec<(String, PathBuf, PathBuf, bool)>, String> {
+    // The DEFAULT is the active mode - the same resolution every mint
+    // site applies (pq_mode()). An empty list reaches here only via the
+    // default flag value, never a user's explicit empty string.
+    let modes: Vec<String> = if modes.is_empty() {
+        vec![sentin8::config::pq_mode()]
+    } else {
+        modes.to_vec()
+    };
+    let mut out = Vec::new();
+    for mode in &modes {
+        // The ensure is per-mode; the minted? answer compares the
+        // mode dir BEFORE the ensure (absent root cert = fresh mint).
+        let scoped = scope_config_to_mode(config, mode)?;
+        let fresh = !scoped.root_ca_cert_path().exists();
+        // `ensure_mode` validates the mode word again - a typo in
+        // `--modes` fails loudly, never silently minting into a
+        // wrong-named directory.
+        CaFamily::ensure_mode(config, mode)?;
+        out.push((
+            mode.clone(),
+            scoped.root_ca_cert_path(),
+            scoped.intermediate_ca_cert_path(),
+            fresh,
+        ));
+    }
+    Ok(out)
+}
+
+/// Scope an offline config to a NAMED mode: the same data-dir derivation
+/// `offline_config` applies, with the mode word from the caller (not the
+/// process env). Errors on an unknown mode word - a typo in `--modes`
+/// must fail loudly, never silently mint into a wrong-named directory.
+fn scope_config_to_mode(config: &AcmeConfig, mode: &str) -> Result<AcmeConfig, String> {
+    match mode {
+        "classical" | "hybrid" | "exclusive" => {}
+        other => {
+            return Err(format!(
+                "unknown PQ mode '{other}' (expected classical, hybrid, or exclusive)"
+            ))
+        }
+    }
+    let mut scoped = config.clone();
+    let base = std::env::var("SENTIN8_ACME_DATA_DIR")
+        .unwrap_or_else(|_| sentin8::config::tls_dir());
+    scoped.data_dir = std::path::PathBuf::from(format!(
+        "{}/{mode}",
+        base.trim_end_matches('/')
+    ));
+    Ok(scoped)
+}
 
 /// Minimal offline config for the mint: only the CA-material fields matter
 /// (data_dir + day windows). The fleet-only fields (captain-assigned port,
@@ -136,21 +202,25 @@ pub fn ensure_infra_tls(
         .unwrap_or_else(|| dir.join("acme-ca"));
     std::fs::create_dir_all(&ca_dir).map_err(|e| format!("create {}: {e}", ca_dir.display()))?;
     // ENSURE THE CA HIERARCHY FIRST (PQCA-1): the per-mode data dir starts
-    // empty on a fresh tree - `CaHierarchy::ensure` mints the root +
-    // intermediate when absent and returns them loaded. Without this the
-    // raw reads below fail before any leaf mint path can run (the
-    // chicken-and-egg of the per-mode split: the CLI pre-mint runs BEFORE
-    // the acme service ever boots).
-    let _ca = CaHierarchy::ensure(config)?;
-    let root_ca_src = config.root_ca_cert_path();
-    let int_ca_src = config.intermediate_ca_cert_path();
-    let mut chain = std::fs::read(&root_ca_src)
-        .map_err(|e| format!("read root CA {}: {e}", root_ca_src.display()))?;
-    let int_pem = std::fs::read(&int_ca_src)
-        .map_err(|e| format!("read intermediate CA {}: {e}", int_ca_src.display()))?;
-    chain.extend_from_slice(&int_pem);
-    std::fs::write(ca_dir.join("root-ca.crt"), &chain)
-        .map_err(|e| format!("publish CA chain: {e}"))?;
+    // empty on a fresh tree - the ensure mints the root + intermediate when
+    // absent and returns them loaded. Without this the raw reads below fail
+    // before any leaf mint path can run (the chicken-and-egg of the per-mode
+    // split: the CLI pre-mint runs BEFORE the acme service ever boots).
+    //
+    // PQCLIENT-2: the infra plane mints through the ACTIVE mode's family
+    // (classical → ECDSA, hybrid/exclusive → the PQ chain). The Rust
+    // client plane presenting these keys can do PQ TLS: the sqlx
+    // PostgreSQL transport is native-tls (system OpenSSL 3.5.x, which
+    // parses ML-DSA-65 client keys and verifies ML-DSA chains -
+    // live-verified), and every rustls surface runs the platform's
+    // pure-Rust PQ provider (PQCLIENT-1). The chain copy publishes the
+    // ACTIVE family's chain so it chains the leafs this pass mints.
+    let family = crate::ca::CaFamily::ensure(config)?;
+    std::fs::write(
+        ca_dir.join("root-ca.crt"),
+        family.ca_chain_pem_for_config(config)?,
+    )
+    .map_err(|e| format!("publish CA chain: {e}"))?;
     let report = EnsureReport {
         server_cert: ensure_leaf(
             config,
@@ -286,9 +356,22 @@ fn m2m_identity_dir() -> PathBuf {
         })
 }
 
+/// The infra plane's CA family - the ACTIVE mode's family (PQCLIENT-2:
+/// the sqlx transport is native-tls, system OpenSSL 3.5.x, so the client
+/// plane presents ML-DSA keys and verifies ML-DSA chains; every infra
+/// mint site resolves through this one function, never an ad-hoc family
+/// choice).
+fn infra_ca_family(config: &AcmeConfig) -> Result<CaFamily, String> {
+    CaFamily::ensure(config)
+}
+
 /// Mint a named leaf when missing/exiring; return its cert path + whether
 /// a fresh mint happened. `sans` may be empty for client-only leaves
-/// (rcgen falls back to the CN; client-auth verification uses the CN).
+/// (the classical leaf builder falls back to the CN; client-auth
+/// verification uses the CN). PQCLIENT-2: the mint goes through the
+/// ACTIVE mode's family and the reuse predicate is family-checked - a
+/// still-valid leaf of the wrong signature family (a stale leaf minted
+/// under another mode) is re-minted, never served.
 fn ensure_leaf(
     config: &AcmeConfig,
     dir: &Path,
@@ -298,11 +381,22 @@ fn ensure_leaf(
 ) -> Result<(PathBuf, bool), String> {
     let cert_path = dir.join(format!("{base}.crt"));
     let key_path = dir.join(format!("{base}.key"));
-    if leaf_is_valid(&cert_path) && leaf_covers_sans(&cert_path, sans) {
+    // Read the leaf's ISSUER DN (the family marker) and compare it
+    // against the CONFIG's intermediate. PQCLIENT-2: the config is the
+    // ACTIVE mode's (the offline mint's per-mode derivation), so the
+    // comparison is against the active family's intermediate - a leaf
+    // issued by any other family (e.g. a stale classical leaf under
+    // exclusive) fails and is re-minted.
+    let leaf_pem = std::fs::read(&cert_path).unwrap_or_default();
+    let int_pem = std::fs::read(config.intermediate_ca_cert_path()).unwrap_or_default();
+    if leaf_is_valid(&cert_path)
+        && crate::ca::leaf_issuer_dn_matches_intermediate(&leaf_pem, &int_pem)
+        && leaf_covers_sans(&cert_path, sans)
+    {
         return Ok((cert_path, false));
     }
-    let ca = CaHierarchy::ensure(config)?;
-    let (cert_pem, key_pem) = ca.sign_leaf(cn, sans, config.leaf_cert_days)?;
+    let family = infra_ca_family(config)?;
+    let (cert_pem, key_pem) = family.sign_leaf(cn, sans, config.leaf_cert_days)?;
     std::fs::write(&cert_path, &cert_pem)
         .map_err(|e| format!("write {}: {e}", cert_path.display()))?;
     std::fs::write(&key_path, &key_pem)
@@ -327,11 +421,18 @@ fn ensure_client_leaf(
 ) -> Result<(PathBuf, bool), String> {
     let cert_path = dir.join(format!("{base}.crt"));
     let key_path = dir.join(format!("{base}.key"));
-    if leaf_is_valid(&cert_path) {
+    // Read the leaf's ISSUER DN (the family marker) and compare it
+    // against the CONFIG's intermediate (the infra plane's classical
+    // pin - an exclusive-issued client leaf fails and is re-minted).
+    let leaf_pem = std::fs::read(&cert_path).unwrap_or_default();
+    let int_pem = std::fs::read(config.intermediate_ca_cert_path()).unwrap_or_default();
+    if leaf_is_valid(&cert_path)
+        && crate::ca::leaf_issuer_dn_matches_intermediate(&leaf_pem, &int_pem)
+    {
         return Ok((cert_path, false));
     }
-    let ca = CaHierarchy::ensure(config)?;
-    let (cert_pem, key_pem) = ca.sign_client_leaf(cn, config.leaf_cert_days)?;
+    let family = infra_ca_family(config)?;
+    let (cert_pem, key_pem) = family.sign_client_leaf(cn, config.leaf_cert_days)?;
     // The identity dir may not exist on a fresh tree (`.run` is
     // gitignored and fully disposable - a wholesale delete must not
     // break re-materialization).

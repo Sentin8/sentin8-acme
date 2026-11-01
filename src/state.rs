@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::time::SystemTime;
 use tokio::sync::RwLock;
 
-use crate::ca::CaHierarchy;
+use crate::ca::CaFamily;
 use crate::config::AcmeConfig;
 use crate::upstream::UpstreamClient;
 
@@ -19,8 +19,13 @@ pub struct AppState {
     pub policy: std::sync::Arc<crate::policy::Engine>,
     /// Runtime configuration.
     pub config: AcmeConfig,
-    /// The loaded CA hierarchy used for signing.
-    pub ca: CaHierarchy,
+    /// The ACTIVE mode's CA family (PQCLIENT-2): the boot `ensure`
+    /// resolves `classical` → the ECDSA `CaHierarchy`, `hybrid`/
+    /// `exclusive` → the PQ `PqCaHierarchy`, and the runtime mint/
+    /// serve sites (`acme.rs` order issue, client-cert endpoint,
+    /// renewal sweep) call this field's `CaFamily` dispatch - the
+    /// runtime serves the family the active mode demands.
+    pub ca: CaFamily,
     /// The upstream ACME relay (external domains, DESIGN §4.2). Built
     /// from the same config; a disabled proxy mode leaves it idle -
     /// every external order is rejected at new-order before it is used.
@@ -37,7 +42,7 @@ pub struct AppState {
 
 impl AppState {
     /// Build state with a fresh (empty) policy engine - tests only.
-    pub fn new(config: AcmeConfig, ca: CaHierarchy, pool: sqlx::PgPool) -> Self {
+    pub fn new(config: AcmeConfig, ca: CaFamily, pool: sqlx::PgPool) -> Self {
         Self::with_policy_engine(config, ca, pool, None)
     }
 
@@ -51,7 +56,7 @@ impl AppState {
     /// non-negotiable). `engine` is `None` only for tests (`new`).
     pub fn with_policy_engine(
         config: AcmeConfig,
-        ca: CaHierarchy,
+        ca: CaFamily,
         pool: sqlx::PgPool,
         engine: Option<std::sync::Arc<crate::policy::Engine>>,
     ) -> Self {

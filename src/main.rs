@@ -168,6 +168,47 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
+    // Offline CA-plane mint (CAMINT-1, acme DESIGN "Offline CLI modes"):
+    // ensure the root + intermediate for each requested PQ mode - no
+    // network, no database, no trust-store install. Default is the ACTIVE
+    // mode; `--modes=classical,hybrid,exclusive` pre-stages every family.
+    // Run by `make ca-tls`. CA stores are per-mode directory scoped
+    // (PQCA-1), so multi-mode ensure is safe; the infra mint
+    // (`--ensure-infra-tls`) stays active-mode only because its leafs
+    // are singletons at fixed paths.
+    if args.iter().any(|a| a == "--ensure-ca") {
+        let _ = sentin8::tls::crypto::sentin8_pq_provider().install_default();
+        dotenvy::dotenv().ok();
+        let config = sentin8_acme_server::infra_tls::offline_config();
+        let modes: Vec<String> = args
+            .iter()
+            .find_map(|a| a.strip_prefix("--modes="))
+            .map(|s| {
+                s.split(',')
+                    .map(|m| m.trim().to_ascii_lowercase())
+                    .filter(|m| !m.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default();
+        match sentin8_acme_server::infra_tls::ensure_ca(&config, &modes) {
+            Ok(rows) => {
+                for (mode, root, intermediate, minted) in rows {
+                    println!(
+                        "CA '{mode}': root {} / intermediate {} ({})",
+                        root.display(),
+                        intermediate.display(),
+                        if minted { "minted" } else { "valid - reused" }
+                    );
+                }
+                return Ok(());
+            }
+            Err(e) => {
+                eprintln!("CA ensure failed: {e}");
+                return Err(anyhow::anyhow!("CA ensure failed: {e}"));
+            }
+        }
+    }
+
     // Install the Graviola PQ crypto provider before any reqwest HTTPS call.
     let _ = sentin8::tls::crypto::sentin8_pq_provider().install_default();
 
