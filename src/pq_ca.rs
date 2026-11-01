@@ -70,6 +70,12 @@ impl PqCaHierarchy {
     /// intermediate-mint time - it stays on disk (0600) and is never kept
     /// in memory after the mint.
     pub fn ensure(config: &AcmeConfig) -> Result<Self, String> {
+        // The store's full layout (accounts, orders, certificates - not just
+        // `ca/`): the classical `CaHierarchy::ensure` does this via
+        // `init_dirs`, and the runtime ACME order path writes authz/account
+        // files the moment a service requests a leaf - a missing `orders/`
+        // fails the very first order under a freshly minted family.
+        config.init_dirs()?;
         let root_cert = std::fs::read(config.root_ca_cert_path());
         let int_cert = std::fs::read(config.intermediate_ca_cert_path());
         let int_key = std::fs::read(config.intermediate_ca_key_path());

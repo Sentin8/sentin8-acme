@@ -30,7 +30,7 @@ async fn main() -> anyhow::Result<()> {
         // The auth-client placeholder inside the minimal config builds a
         // reqwest client - the PQ provider must be installed first (this
         // mode runs before the shared install below).
-        let _ = sentin8::tls::crypto::sentin8_pq_provider().install_default();
+        sentin8::tls::crypto::install_platform_provider();
         dotenvy::dotenv().ok();
         let config = sentin8_acme_server::infra_tls::offline_config();
         // Optional workload pre-mint: `--mint-workloads a,b,c` mints (or
@@ -177,7 +177,7 @@ async fn main() -> anyhow::Result<()> {
     // (`--ensure-infra-tls`) stays active-mode only because its leafs
     // are singletons at fixed paths.
     if args.iter().any(|a| a == "--ensure-ca") {
-        let _ = sentin8::tls::crypto::sentin8_pq_provider().install_default();
+        sentin8::tls::crypto::install_platform_provider();
         dotenvy::dotenv().ok();
         let config = sentin8_acme_server::infra_tls::offline_config();
         let modes: Vec<String> = args
@@ -209,8 +209,10 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    // Install the Graviola PQ crypto provider before any reqwest HTTPS call.
-    let _ = sentin8::tls::crypto::sentin8_pq_provider().install_default();
+    // Install the platform PQ crypto provider (PQCLIENT-1: PQ verification
+    // + ML-DSA key loading) before any TLS traffic - the service plane
+    // presents exclusive-family leafs under the active mode.
+    sentin8::tls::crypto::install_platform_provider();
 
     dotenvy::dotenv().ok();
     let _ = sentin8::middleware::error_metrics::init_tracing_with_metrics(
