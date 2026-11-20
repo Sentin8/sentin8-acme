@@ -537,9 +537,14 @@ impl UpstreamClient {
     }
 
     /// Poll the upstream order until terminal (bounded attempts, 500ms
-    /// apart - the http-01 validation round trip is upstream-side).
+    /// apart - the http-01 validation round trip is upstream-side). A
+    /// public CA validates the challenge asynchronously: LE staging
+    /// commonly takes 10-60s (multi-perspective validation fleets), so
+    /// the window must cover a FULL validation cycle - 120 attempts at
+    /// 500ms (60s) - not the original 10s ceiling, which turned a healthy
+    /// external mint into `poll: exhausted attempts` (RIGMODE-1).
     pub async fn poll_order(&self, order: &UpstreamOrder) -> Result<UpstreamOrder, UpstreamError> {
-        for _ in 0..20 {
+        for _ in 0..120 {
             let resp = self.post_kid(&order.url, &json!({})).await?;
             let status = resp.status();
             if !(200..300).contains(&status.as_u16()) {

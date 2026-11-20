@@ -1443,6 +1443,42 @@ async fn relay_finalize_order(
         .map(|i| i.value.clone())
         .unwrap_or_default();
 
+    // Reuse-before-mint for EXTERNAL orders (DESIGN 4.1/4.2, RIGMODE-1):
+    // the same rule the local finalize applies, extended to upstream
+    // certs. A live, non-revoked cert for the SAME domain ends the
+    // order against the cache - a public CA's issuance rate limits are
+    // per-domain-per-week, so a fleet restart burning a fresh LE order
+    // for an existing valid leaf is the failure mode this prevents.
+    if let Some((existing_id, _existing_domain)) =
+        find_reusable_cert(&state.config, &domain)
+    {
+        tracing::info!(domain = %domain, cert_id = %existing_id,
+            "reuse-before-mint: external order returns the cached certificate");
+        let cert_id_str = existing_id.clone();
+        let updated_order = OrderRecord {
+            id: order.id.clone(),
+            status: "valid".into(),
+            identifiers: order.identifiers.clone(),
+            authorizations: order.authorizations.clone(),
+            finalize: order.finalize.clone(),
+            certificate: Some(format!("{}/acme/cert/{}", state.issuer, cert_id_str)),
+            created_at: order.created_at,
+        };
+        let order_path = state.config.orders_dir().join(format!("{}.json", order.id));
+        std::fs::write(&order_path, serde_json::json!({
+            "order": &updated_order,
+            "upstream": parsed.get("upstream").cloned().unwrap_or(serde_json::Value::Null),
+            "is_proxy": true,
+        }).to_string()).ok();
+        emit_event(
+            state,
+            "sentin8:acme:order:finalized",
+            serde_json::to_value(&updated_order).unwrap_or_default(),
+        )
+        .await;
+        return Json(updated_order).into_response();
+    }
+
     // Finalize with a real CSR; persist the CSR key alongside the account.
     let (upstream_order, csr_key_pem) = match state.upstream.finalize(&relay.order, &domain).await {
         Ok(t) => t,
