@@ -330,6 +330,66 @@ impl UpstreamClient {
         Ok(acct)
     }
 
+    /// POST-as-GET (RFC 8555 §6.3): the payload member is the EMPTY
+    /// string (""), not an encoded object. LE rejects `{}`/`null`
+    /// payloads with `POST-as-GET requests must have an empty payload`
+    /// (found live on the first public-mode run) - the challenge-ready
+    /// notify, order poll, and certificate download all ride this form.
+    async fn post_kid_empty_payload(&self, url: &str) -> Result<reqwest::Response, UpstreamError> {
+        let acct = self.ensure_account().await?;
+        let key = load_key(&acct.key_pem)?;
+        for attempt in 0..2 {
+            let nonce = self.take_nonce().await?;
+            let protected = json!({
+                "alg": "ES256",
+                "nonce": nonce,
+                "url": url,
+                "kid": acct.kid,
+            });
+            let protected_b64 = b64(protected.to_string().as_bytes());
+            let payload_b64 = ""; // RFC 8555 6.3: payload = empty string
+            let sig = sign_es256(&key, &format!("{protected_b64}.{payload_b64}"))
+                .map_err(UpstreamError::Unreachable)?;
+            let body = json!({
+                "protected": protected_b64,
+                "payload": payload_b64,
+                "signature": sig,
+            });
+            let resp = self
+                .http
+                .post(url)
+                .header("Content-Type", "application/jose+json")
+                .json(&body)
+                .send()
+                .await
+                .map_err(|e| UpstreamError::Unreachable(format!("post {url}: {e}")))?;
+            let status = resp.status();
+            if status.as_u16() == 400 {
+                let text = resp.text().await.unwrap_or_default();
+                if text.contains("badNonce") {
+                    if attempt == 0 {
+                        *self.nonce.write().await = None;
+                        continue;
+                    }
+                    return Err(UpstreamError::Unreachable(
+                        "badNonce persisted after replay".into(),
+                    ));
+                }
+                return Err(UpstreamError::Rejected(format!(
+                    "{status}: {}",
+                    short(&text)
+                )));
+            }
+            if let Some(n) = header(&resp, "Replay-Nonce") {
+                *self.nonce.write().await = Some(n.to_string());
+            }
+            return Ok(resp);
+        }
+        Err(UpstreamError::Unreachable(
+            "post_kid: unreachable retry loop".into(),
+        ))
+    }
+
     /// kid-mode JWS POST (account-scoped, RFC 8555 §6.2). A `badNonce`
     /// response is retried ONCE with a fresh nonce.
     async fn post_kid(
@@ -497,7 +557,9 @@ impl UpstreamClient {
     /// the upstream then fetches the key authorization from the proxy's
     /// :80 listener (DESIGN §4.3).
     pub async fn notify_challenge(&self, challenge_url: &str) -> Result<(), UpstreamError> {
-        let resp = self.post_kid(challenge_url, &json!({})).await?;
+        // The challenge-ready notify is a POST-as-GET shape (payload =
+        // empty string) - the `{}` payload 400s (RIGMODE-1 live finding).
+        let resp = self.post_kid_empty_payload(challenge_url).await?;
         let status = resp.status();
         if !(200..300).contains(&status.as_u16()) {
             return Err(UpstreamError::Rejected(format!(
@@ -560,7 +622,7 @@ impl UpstreamClient {
     /// external mint into `poll: exhausted attempts` (RIGMODE-1).
     pub async fn poll_order(&self, order: &UpstreamOrder) -> Result<UpstreamOrder, UpstreamError> {
         for _ in 0..120 {
-            let resp = self.post_kid(&order.url, &json!({})).await?;
+            let resp = self.post_kid_empty_payload(&order.url).await?;
             let status = resp.status();
             if !(200..300).contains(&status.as_u16()) {
                 return Err(UpstreamError::Rejected(format!(
@@ -593,7 +655,7 @@ impl UpstreamClient {
     /// Download the certificate chain (POST-as-GET, RFC 8555 §6.3); the
     /// PEM text is cached by the handler under `certificates/{id}`.
     pub async fn download_cert(&self, cert_url: &str) -> Result<String, UpstreamError> {
-        let resp = self.post_kid(cert_url, &json!(null)).await?;
+        let resp = self.post_kid_empty_payload(cert_url).await?;
         let status = resp.status();
         if !(200..300).contains(&status.as_u16()) {
             return Err(UpstreamError::Unreachable(format!("cert fetch {status}")));
