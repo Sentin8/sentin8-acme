@@ -297,9 +297,24 @@ impl UpstreamClient {
             .send()
             .await
             .map_err(|e| UpstreamError::Unreachable(format!("new-account: {e}")))?;
+        // A rejected account creation currently surfaced as the bare
+        // 'new-account: no Location' Unreachable (mapped to a causeless
+        // 502; LE's real answer - e.g. invalidContact on the configured
+        // address - stayed invisible). Read the status first: a 4xx is a
+        // REJECTED order (the caller's body carries LE's problem detail),
+        // a 5xx stays Unreachable. 2xx carries the kid Location.
+        let status = resp.status();
+        if !(200..300).contains(&status.as_u16()) {
+            let detail = problem_detail(resp).await;
+            return Err(UpstreamError::Rejected(format!(
+                "new-account {status}: {detail}"
+            )));
+        }
         let kid = header(&resp, "Location")
             .map(|s| s.to_string())
-            .ok_or_else(|| UpstreamError::Unreachable("new-account: no Location".into()))?;
+            .ok_or_else(|| {
+                UpstreamError::Unreachable("new-account: no Location".into())
+            })?;
         if let Some(n) = header(&resp, "Replay-Nonce") {
             *self.nonce.write().await = Some(n.to_string());
         }
