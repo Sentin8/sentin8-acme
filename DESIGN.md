@@ -736,7 +736,15 @@ standards-compliant ACME outbound:
 - **Account**: ES256 account key generated once, persisted at
   `upstream-account.json` (`upstream_account_path()`, 0600) alongside its
   kid; registered against the upstream `newAccount` endpoint on first
-  external order (contact from `SENTIN8_ACME_UPSTREAM_CONTACT`).
+  external order (contact from `SENTIN8_ACME_UPSTREAM_CONTACT`). The
+  file is per-PQ-mode-dir only - it is NOT namespaced by directory: the
+  same file carries the account for WHICHEVER upstream the process is
+  configured against. A directory switch (staging → production) with
+  an un-migrated file makes acme present the old directory's kid to the
+  new one - a permanent 400/401 on every order until the file is moved
+  aside (the migration on 2026-11-20 parked it as
+  `upstream-account.staging.json`; the operator re-registers fresh on
+  first production order).
 - **Every request is JWS-signed** (RFC 8555 §6.2: ES256, `kid` or
   embedded JWK for the initial newAccount, nonce from a fresh
   `newNonce` fetch, `url` header matching the target, `Content-Type:
