@@ -353,6 +353,7 @@ pub async fn new_order(
             token: generate_nonce(),
             url: format!("{base}/challenge/{}", Uuid::new_v4()),
         }],
+        order_id: Some(order_id.clone()),
     };
     let authz_path = state
         .config
@@ -393,6 +394,13 @@ pub struct AuthorizationRecord {
     pub status: String,
     /// Challenges that can prove control of the identifier.
     pub challenges: Vec<ChallengeRecord>,
+    /// The order this authorization belongs to. The EXTERNAL (relay)
+    /// branch of challenge_ready reads the linked order's RelayState for
+    /// the upstream notify target - the mirror authz never carries an
+    /// upstream URL (the tls fetcher would otherwise speak to the
+    /// upstream directly, unsigned; RIGMODE-1 live finding).
+    #[serde(default)]
+    pub order_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -503,12 +511,33 @@ pub async fn challenge_ready(
                             ch.status = "valid".into();
                             authz.status = "valid".into();
                         } else {
-                            // External order - notify the upstream CA
-                            // (DESIGN §4.2). The upstream validates by
-                            // fetching the key authorization from the
-                            // proxy's :80 listener; the local authz goes
-                            // valid only after the upstream accepts.
-                            let upstream_url = ch.url.clone();
+                            // External order - the mirror challenge was
+                            // notified; translate into the upstream
+                            // notify. The upstream target rides the
+                            // authz's LINKED order's RelayState - the
+                            // mirror authz never carries an upstream
+                            // URL (the fetcher only ever sees local
+                            // URLs; RIGMODE-1's leak is closed).
+                            let upstream_url = authz.order_id.clone().and_then(|oid| {
+                                let path = state
+                                    .config
+                                    .orders_dir()
+                                    .join(format!("{oid}.json"));
+                                let text = std::fs::read_to_string(path).ok()?;
+                                let v: serde_json::Value =
+                                    serde_json::from_str(&text).ok()?;
+                                v.get("upstream")?
+                                    .get("challenge_url")?
+                                    .as_str()
+                                    .map(|s| s.to_string())
+                            });
+                            let Some(upstream_url) = upstream_url else {
+                                return Json(serde_json::json!({
+                                    "status": "invalid",
+                                    "error": "external challenge missing its relay state",
+                                }))
+                                .into_response();
+                            };
                             match state.upstream.notify_challenge(&upstream_url).await {
                                 Ok(()) => {
                                     ch.status = "valid".into();
@@ -1387,20 +1416,28 @@ async fn relay_new_order(state: &Arc<AppState>, req: &NewOrderRequest) -> Respon
     });
     std::fs::write(&order_path, order_with_upstream.to_string()).ok();
 
-    // Create a local authorization mirroring the external challenge. The
-    // challenge URL is the UPSTREAM's notify target - challenge_ready
-    // forwards the notification there.
+    // Create a local authorization mirroring the external challenge.
+    // The mirror carries a LOCAL challenge URL (the same shape as any
+    // local order) - the tls crate's generic 4-step loop gets
+    // authz -> local challenge URL and notifies ACME, and ONLY acme's
+    // challenge_ready speaks the upstream protocol. Storing the
+    // upstream's own challenge URL here leaked it to the fetcher, whose
+    // unsigned POST then hit LE directly ("Unable to validate JWS",
+    // RIGMODE-1 live finding). The upstream notify target rides the
+    // order record's RelayState (relay.challenge_url).
+    let local_challenge_id = Uuid::new_v4().to_string();
     let authz = AuthorizationRecord {
         id: authz_id.clone(),
         identifier: identifier.clone(),
         status: "pending".into(),
         challenges: vec![ChallengeRecord {
-            id: Uuid::new_v4().to_string(),
+            id: local_challenge_id.clone(),
             challenge_type: "http-01".into(),
             status: "pending".into(),
             token: token.clone(),
-            url: challenge_url.clone(),
+            url: format!("{base}/challenge/{local_challenge_id}"),
         }],
+        order_id: Some(order_id.clone()),
     };
     let authz_path = state
         .config
