@@ -498,15 +498,20 @@ flowchart TD
   not need the PEM; a store without a hit costs one directory walk.
 - **Revocation interaction:** a revoked certificate is never reused;
   revocation forces a genuinely fresh mint on the next finalize.
-- **External orders (upstream source) reuse too (RIGMODE-1):** the
-  scan makes no distinction of `source` - an upstream-signed live leaf
-  for the same domain ends an external order the same way (RIGMODE-1's
-  rate-limit motive: a public CA's issuance limits are
-  per-domain-per-week, so a fleet restart that re-orders an existing
-  valid leaf against Let's Encrypt burns allowance for nothing; with
-  reuse the re-finalize is idempotent against the relay cache). The
-  reuse hit also completes WITHOUT the upstream round trip - the order
-  never re-opens the upstream's authz.
+- **External orders (upstream source) reuse too - ISSUER-CHECKED
+  (RIGMODE-1):** the scan distinguishes `source`; an upstream-signed
+  live leaf ends ONLY an external order (RIGMODE-1's rate-limit motive:
+  a public CA's issuance limits are per-domain-per-week, so a fleet
+  restart that re-orders an existing valid leaf against Let's Encrypt
+  burns allowance for nothing; with reuse the re-finalize is idempotent
+  against the relay cache). The cross-source case is the mode-flip
+  story: after `platform` -> `public`, the domain already carries a
+  live platform-CA leaf - a source-blind hit would return it and the
+  upstream-issued expectation would never materialize; the source
+  filter forces the fresh upstream order (and vice-versa: a local
+  order never re-uses an upstream leaf). The reuse hit also completes
+  WITHOUT the upstream round trip - the order never re-opens the
+  upstream's authz.
 - **Concurrent finalize race:** two concurrent finalizes for the same
   domain may both miss and both mint - the last writer wins the order
   URL and both certs remain valid leaves (the caller's persisted pair is

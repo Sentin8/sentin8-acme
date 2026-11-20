@@ -676,7 +676,7 @@ pub async fn finalize_order(
     // reuse, every re-request minted a fresh leaf + directory
     // (52,761 dirs / 650 MB observed before this rule).
     if let Some((existing_id, _existing_domain)) =
-        find_reusable_cert(&state.config, &domain)
+        find_reusable_cert(&state.config, &domain, "local")
     {
         tracing::info!(domain = %domain, cert_id = %existing_id, "reuse-before-mint: returning existing certificate");
         order.status = "valid".into();
@@ -1246,6 +1246,7 @@ fn now_ts() -> u64 {
 fn find_reusable_cert(
     config: &crate::config::AcmeConfig,
     domain: &str,
+    required_source: &str,
 ) -> Option<(String, String)> {
     let now = now_ts();
     let active_mode = sentin8::config::pq_mode();
@@ -1268,6 +1269,16 @@ fn find_reusable_cert(
             .unwrap_or("classical");
         if cert_mode != active_mode {
             continue; // minted for a different transport posture - never reused
+        }
+        // Issuer-checked reuse (RIGMODE-1): a cert only ends an order of
+        // its OWN source. After a platform->public mode flip the domain
+        // already carries a live PLATFORM-CA leaf; a cross-source hit
+        // would silently return it and the "LE-issued" expectation would
+        // die exactly where the fleet state was mixed - the external
+        // order must reach the upstream for a LE-signed one.
+        let cert_source = meta.get("source").and_then(|s| s.as_str()).unwrap_or("local");
+        if cert_source != required_source {
+            continue;
         }
         if meta.get("revoked").and_then(|r| r.as_bool()).unwrap_or(false) {
             continue; // a revoked cert is never reused - force a fresh mint
@@ -1450,7 +1461,7 @@ async fn relay_finalize_order(
     // per-domain-per-week, so a fleet restart burning a fresh LE order
     // for an existing valid leaf is the failure mode this prevents.
     if let Some((existing_id, _existing_domain)) =
-        find_reusable_cert(&state.config, &domain)
+        find_reusable_cert(&state.config, &domain, "upstream")
     {
         tracing::info!(domain = %domain, cert_id = %existing_id,
             "reuse-before-mint: external order returns the cached certificate");
