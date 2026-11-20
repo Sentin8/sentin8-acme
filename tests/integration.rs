@@ -963,11 +963,14 @@ mod tests {
             let (order, token_out, challenge_out) = client.new_order("example.dev").await.unwrap();
             assert_eq!(token_out, "mock-http01-token");
             assert_eq!(challenge_out, format!("{base}/challenge/1"));
-            // The http-01 key authorization is captured and servable.
+            // The http-01 key authorization is captured and servable
+            // (the value carries its capture instant - the retention
+            // bound's eviction key, RIGMODE-1).
             let captured = client.challenge_tokens.read().await.clone();
-            let ka = captured
+            let ka = &captured
                 .get("mock-http01-token")
-                .expect("captured key auth");
+                .expect("captured key auth")
+                .1;
             assert!(ka.starts_with("mock-http01-token."));
             assert_eq!(ka.split('.').count(), 2);
 

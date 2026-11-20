@@ -30,10 +30,6 @@ fn b64(data: &[u8]) -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(data)
 }
 
-/// Cap on captured http-01 key authorizations (bounded map - a stuck
-/// upstream can never grow acme's memory unbounded).
-const MAX_CHALLENGE_TOKENS: usize = 256;
-
 /// Persisted upstream ACME account (acme DESIGN.md §3 - data model).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct UpstreamAccount {
@@ -91,9 +87,12 @@ pub struct UpstreamClient {
     nonce: tokio::sync::RwLock<Option<String>>,
     /// HTTP-01 key authorizations captured at newOrder time, keyed by the
     /// upstream's challenge token - served by the
-    /// `/.well-known/acme-challenge/{token}` route (bounded, DESIGN §4.3).
+    /// `/.well-known/acme-challenge/{token}` route (DESIGN §4.3). The
+    /// value carries the capture instant - the eviction bound is
+    /// retention-time first (the validator's scheduling window), the
+    /// hard count cap second (RIGMODE-1 eviction finding).
     pub challenge_tokens:
-        std::sync::Arc<tokio::sync::RwLock<std::collections::HashMap<String, String>>>,
+        std::sync::Arc<tokio::sync::RwLock<std::collections::HashMap<String, (std::time::Instant, String)>>>,
 }
 
 /// Sign one JOSE signing input with ES256 (RFC 7518 §3.4 - SHA-256 digest,
@@ -159,6 +158,19 @@ fn key_authorization(token: &str, key: &p256::ecdsa::SigningKey) -> String {
     let digest = sha2::Sha256::digest(jwk_thumbprint(key).as_bytes());
     format!("{token}.{}", b64(&digest))
 }
+
+/// Captured-token retention (RIGMODE-1 eviction finding). The plain
+/// FIFO cap was NOT enough: the fleet's re-order loop (a service whose
+/// cert fetch fails re-orders every backoff cycle) cycles 256 slots
+/// within minutes, so a challenge token LE validates minutes after the
+/// notify could 404 - and LE marks the challenge invalid on the fetch
+/// miss. The map now bounds by TIME-TO-CONSUMPTION: a token lives at
+/// least CHALLENGE_TOKEN_RETENTION_SECS since capture (the validator's
+/// realistic scheduling window plus retries), and the hard cap still
+/// bounds memory (the oldest PAST-retention entry evicts; a fresh
+/// never-bounded entry is never dropped while under the cap).
+const CHALLENGE_TOKEN_RETENTION_SECS: u64 = 600;
+const MAX_CHALLENGE_TOKENS: usize = 256;
 
 impl UpstreamClient {
     /// Build the relay over `config`. The reqwest client rides a HYBRID
@@ -532,14 +544,31 @@ impl UpstreamClient {
         let acct = self.ensure_account().await?;
         let key = load_key(&acct.key_pem)?;
         let key_auth = key_authorization(&token, &key);
+        let now = std::time::Instant::now();
         let mut map = self.challenge_tokens.write().await;
         if map.len() >= MAX_CHALLENGE_TOKENS {
-            // Bounded: evict the oldest captured token.
-            if let Some(first) = map.keys().next().cloned() {
-                map.remove(&first);
+            // Bounded: evict the OLDEST PAST-RETENTION entry (a token
+            // inside its validator window is never dropped while slots
+            // remain). In the pathological all-pending flood - every
+            // entry inside retention - the oldest still goes, keeping
+            // the hard memory bound.
+            let victim = map
+                .iter()
+                .filter(|(_, (at, _))| {
+                    at.elapsed() >= std::time::Duration::from_secs(CHALLENGE_TOKEN_RETENTION_SECS)
+                })
+                .min_by_key(|(_, (at, _))| *at)
+                .map(|(t, _)| t.clone())
+                .or_else(|| {
+                    map.iter()
+                        .min_by_key(|(_, (at, _))| *at)
+                        .map(|(t, _)| t.clone())
+                });
+            if let Some(v) = victim {
+                map.remove(&v);
             }
         }
-        map.insert(token.clone(), key_auth);
+        map.insert(token.clone(), (now, key_auth));
         Ok((
             UpstreamOrder {
                 url: order_url,

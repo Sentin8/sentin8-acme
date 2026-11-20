@@ -1640,7 +1640,7 @@ pub async fn serve_challenge_token(
     AxumPath(token): AxumPath<String>,
 ) -> Response {
     match state.upstream.challenge_tokens.read().await.get(&token) {
-        Some(key_auth) => (
+        Some((_, key_auth)) => (
             StatusCode::OK,
             [("Content-Type", "text/plain".to_string())],
             key_auth.clone(),
