@@ -54,6 +54,11 @@ mod tests {
             upstream_contact: "a@m.n".into(),
             upstream_ca_pem: String::new(),
             local_domains: vec!["local.sentin8.dev".into()],
+            public_hostnames: Vec::new(),
+            dns_provider: String::new(),
+            dns_api_token: String::new(),
+            dns_zone: String::new(),
+            dns_api_base: String::new(),
             database_url: "postgresql://unused".into(),
             sentin8_bus_url: String::new(),
             stream_family: "acme".into(),
@@ -533,6 +538,78 @@ mod tests {
         assert!(!acme::is_local_domain("bus.ops.sys.local.sentin8.dev", &[]));
     }
 
+    #[test]
+    fn public_hostname_allowlist_gate() {
+        install_provider();
+        let mk = |entries: Vec<&str>| {
+            let mut config = mk_config();
+            config.public_hostnames = entries.into_iter().map(|s| s.to_string()).collect();
+            config
+        };
+
+        // An empty allowlist relays NOTHING (CERTTIER-1 invariant 16: no
+        // name is ever relayed by fallthrough - even with proxy mode on).
+        let config = mk(vec![]);
+        assert!(!config.is_public_hostname_allowed("auth.ibank.example.com"));
+        assert!(!config.is_public_hostname_allowed("*.prod.ibank.example.com"));
+
+        // Exact-hostname entries match themselves, nothing else.
+        let config = mk(vec!["auth.ibank.example.com"]);
+        assert!(config.is_public_hostname_allowed("auth.ibank.example.com"));
+        assert!(!config.is_public_hostname_allowed("bff.auth.ibank.example.com"));
+        assert!(!config.is_public_hostname_allowed("evil.com"));
+
+        // Wildcard entries cover exactly ONE label beneath the zone
+        // (RFC 8555 §7.1.3 wildcard semantics).
+        let config = mk(vec!["*.prod.ibank.example.com"]);
+        // The wildcard identifier itself (ordering the zone wildcard).
+        assert!(config.is_public_hostname_allowed("*.prod.ibank.example.com"));
+        // One label under the zone.
+        assert!(config.is_public_hostname_allowed("auth.prod.ibank.example.com"));
+        // Two labels under the zone: NOT covered (a wildcard cert covers
+        // exactly one label).
+        assert!(!config.is_public_hostname_allowed("a.b.prod.ibank.example.com"));
+        // The bare zone apex.
+        assert!(!config.is_public_hostname_allowed("prod.ibank.example.com"));
+
+        // Case-insensitivity on both sides.
+        let config = mk(vec!["*.PROD.IBANK.Example.COM"]);
+        assert!(config.is_public_hostname_allowed("AUTH.prod.ibank.example.com"));
+
+        // A mixed declaration composes: exact entries + wildcards.
+        let config = mk(vec![
+            "auth.ibank.example.com",
+            "*.www.ibank.example.com",
+        ]);
+        assert!(config.is_public_hostname_allowed("auth.ibank.example.com"));
+        assert!(config.is_public_hostname_allowed("app.www.ibank.example.com"));
+        assert!(!config.is_public_hostname_allowed("other.ibank.example.com"));
+    }
+
+    #[test]
+    fn dns01_shape_routing() {
+        install_provider();
+        let config = mk_config();
+        // The challenge kind is decided by IDENTIFIER SHAPE, never a knob
+        // (CERTWILD-1, DESIGN §4.2b).
+        assert!(config.requires_dns01("*.prod.ibank.example.com"));
+        assert!(!config.requires_dns01("auth.prod.ibank.example.com"));
+        // A partial DNS profile is fail-closed as if absent.
+        let mut partial = mk_config();
+        partial.dns_provider = "cloudflare".into();
+        assert!(!partial.dns01_configured(), "token+zone are required");
+        partial.dns_api_token = "tok".into();
+        assert!(!partial.dns01_configured(), "zone is required");
+        partial.dns_zone = "ibank.example.com".into();
+        assert!(partial.dns01_configured());
+        // The TXT record name replaces the `*` label with
+        // `_acme-challenge` (RFC 8555 §8.4).
+        assert_eq!(
+            sentin8_acme_server::dns01::CloudflareDns::txt_record_name("prod.ibank.example.com"),
+            "_acme-challenge.prod.ibank.example.com"
+        );
+    }
+
     // ── Story 22.20.6 - Admin UI tests ──────────────────────────────────
     //
     // The admin_ui handlers require an `AppState` which contains a
@@ -960,9 +1037,11 @@ mod tests {
             let client = UpstreamClient::new(&config).unwrap();
 
             // Full external-order round trip.
-            let (order, token_out, challenge_out) = client.new_order("example.dev").await.unwrap();
+            let (order, token_out, challenge_out, kind) =
+                client.new_order("example.dev").await.unwrap();
             assert_eq!(token_out, "mock-http01-token");
             assert_eq!(challenge_out, format!("{base}/challenge/1"));
+            assert_eq!(kind, sentin8_acme_server::upstream::ChallengeKind::Http01);
             // The http-01 key authorization is captured and servable
             // (the value carries its capture instant - the retention
             // bound's eviction key, RIGMODE-1).
@@ -1001,6 +1080,532 @@ mod tests {
         });
     }
 
+    #[test]
+    fn upstream_dns01_wildcard_relay_via_mock_directory() {
+        install_provider();
+        // CERTWILD-1 (DESIGN §4.2b): a wildcard order selects the dns-01
+        // challenge by identifier shape, publishes the TXT record through
+        // the provider API, never captures an http-01 token, and clears
+        // the record at forget_token. The mock directory offers a dns-01
+        // challenge; the mock Cloudflare API records the publish/clear
+        // calls. Also proves the fail-closed shape: no provider
+        // configured -> a wildcard order is REJECTED, never relayed.
+        use base64::Engine;
+        use sentin8_acme_server::upstream::{ChallengeKind, UpstreamClient};
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        rt.block_on(async {
+            // Bind the mock ACME directory first.
+            let probe = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = probe.local_addr().unwrap().port();
+            let base = format!("http://127.0.0.1:{port}");
+            drop(probe);
+
+            // The TXT records the mock Cloudflare API received, shared
+            // with the assertions: (record name, value) pairs + a clear
+            // marker set.
+            let published: std::sync::Arc<
+                tokio::sync::Mutex<Vec<(String, String)>>,
+            > = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
+            let cleared: std::sync::Arc<tokio::sync::Mutex<std::collections::HashSet<String>>> =
+                std::sync::Arc::new(tokio::sync::Mutex::new(
+                    std::collections::HashSet::new(),
+                ));
+
+            let nonce_seq = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+            let next_nonce = {
+                let nonce_seq = nonce_seq.clone();
+                move || {
+                    let n = nonce_seq.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    format!("mock-nonce-{n}")
+                }
+            };
+
+            let dns_published = published.clone();
+            let dns_cleared = cleared.clone();
+            // Mock Cloudflare API: zone lookup + TXT publish/clear.
+            let dns_api = axum::Router::new()
+                .route(
+                    "/zones",
+                    axum::routing::get(|| async move {
+                        axum::Json(serde_json::json!({
+                            "success": true,
+                            "result": [{"id": "zone-id-1"}],
+                        }))
+                    }),
+                )
+                .route(
+                    "/zones/zone-id-1/dns_records",
+                    axum::routing::get({
+                        let dns_published = dns_published.clone();
+                        |axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>| async move {
+                            // The list returns what was published (the
+                            // clear path lists-then-deletes; the query
+                            // filters by name server-side in the real
+                            // API).
+                            let want = q.get("name").cloned().unwrap_or_default();
+                            let published = dns_published.lock().await;
+                            let result: Vec<serde_json::Value> = published
+                                .iter()
+                                .filter(|(name, _)| *name == want)
+                                .map(|(name, content)| {
+                                    serde_json::json!({"id": "rec-1", "name": name, "content": content})
+                                })
+                                .collect();
+                            axum::Json(serde_json::json!({"success": true, "result": result}))
+                        }
+                    })
+                    .post({
+                        let dns_published = dns_published.clone();
+                        move |axum::extract::Json(body): axum::extract::Json<serde_json::Value>| {
+                            let dns_published = dns_published.clone();
+                            async move {
+                                let rec = (
+                                    body["name"].as_str().unwrap_or_default().to_string(),
+                                    body["content"].as_str().unwrap_or_default().to_string(),
+                                );
+                                dns_published.lock().await.push(rec);
+                                axum::Json(serde_json::json!({
+                                    "success": true,
+                                    "result": {"id": "rec-1"},
+                                }))
+                            }
+                        }
+                    }),
+                )
+                .route(
+                    "/zones/zone-id-1/dns_records/rec-1",
+                    axum::routing::delete({
+                        let dns_cleared = dns_cleared.clone();
+                        move || {
+                            let dns_cleared = dns_cleared.clone();
+                            async move {
+                                dns_cleared.lock().await.insert("rec-1".to_string());
+                                axum::Json(serde_json::json!({"success": true}))
+                            }
+                        }
+                    }),
+                );
+            let dns_probe = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let dns_port = dns_probe.local_addr().unwrap().port();
+            drop(dns_probe);
+            let dns_listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{dns_port}"))
+                .await
+                .unwrap();
+            tokio::spawn(async move { axum::serve(dns_listener, dns_api).await });
+
+            let app = axum::Router::new()
+                .route(
+                    "/directory",
+                    axum::routing::get({
+                        let base = base.clone();
+                        move || {
+                            let base = base.clone();
+                            async move {
+                                axum::Json(serde_json::json!({
+                                    "newAccount": format!("{base}/new-account"),
+                                    "newNonce": format!("{base}/new-nonce"),
+                                    "newOrder": format!("{base}/new-order"),
+                                }))
+                            }
+                        }
+                    }),
+                )
+                .route(
+                    "/new-nonce",
+                    axum::routing::get({
+                        let next_nonce = next_nonce.clone();
+                        move || {
+                            let n = next_nonce();
+                            async move { [("Replay-Nonce", n)] }
+                        }
+                    }),
+                )
+                .route(
+                    "/new-account",
+                    axum::routing::post({
+                        let kid = format!("{base}/acct/1");
+                        let next_nonce = next_nonce.clone();
+                        move || {
+                            let kid = kid.clone();
+                            let n = next_nonce();
+                            async move {
+                                let mut resp_headers = axum::http::HeaderMap::new();
+                                resp_headers.insert("Location", kid.parse().unwrap());
+                                resp_headers.insert("Replay-Nonce", n.parse().unwrap());
+                                (
+                                    axum::http::StatusCode::CREATED,
+                                    resp_headers,
+                                    axum::Json(serde_json::json!({"status": "valid"})),
+                                )
+                            }
+                        }
+                    }),
+                )
+                .route(
+                    "/new-order",
+                    axum::routing::post({
+                        let base = base.clone();
+                        let next_nonce = next_nonce.clone();
+                        move |body: String| {
+                            let base = base.clone();
+                            let n = next_nonce();
+                            async move {
+                                // The order's identifier shape carries
+                                // through: a wildcard order relays the
+                                // wildcard identifier verbatim.
+                                let jws: serde_json::Value = serde_json::from_str(&body).unwrap();
+                                let payload_b64 = jws["payload"].as_str().unwrap();
+                                let payload_raw = base64::engine::general_purpose::URL_SAFE_NO_PAD
+                                    .decode(payload_b64)
+                                    .unwrap();
+                                let payload: serde_json::Value =
+                                    serde_json::from_slice(&payload_raw).unwrap();
+                                assert_eq!(
+                                    payload["identifiers"][0]["value"], "*.prod.ibank.example.com",
+                                    "the wildcard identifier relays verbatim"
+                                );
+                                let mut resp_headers = axum::http::HeaderMap::new();
+                                resp_headers
+                                    .insert("Location", format!("{base}/order/1").parse().unwrap());
+                                resp_headers.insert("Replay-Nonce", n.parse().unwrap());
+                                (
+                                    axum::http::StatusCode::CREATED,
+                                    resp_headers,
+                                    axum::Json(serde_json::json!({
+                                        "status": "pending",
+                                        "authorizations": [format!("{base}/authz/1")],
+                                        "finalize": format!("{base}/order/1/finalize"),
+                                    })),
+                                )
+                            }
+                        }
+                    }),
+                )
+                .route(
+                    "/authz/1",
+                    axum::routing::get({
+                        let base = base.clone();
+                        move || {
+                            let base = base.clone();
+                            async move {
+                                axum::Json(serde_json::json!({
+                                    "status": "pending",
+                                    "challenges": [{
+                                        "type": "dns-01",
+                                        "status": "pending",
+                                        "token": "mock-dns01-token",
+                                        "url": format!("{base}/challenge/1"),
+                                    }],
+                                }))
+                            }
+                        }
+                    }),
+                )
+                .route(
+                    "/challenge/1",
+                    axum::routing::post(|| async { axum::http::StatusCode::OK }),
+                )
+                .route(
+                    "/order/1/finalize",
+                    axum::routing::post(|body: String| async move {
+                        let jws: serde_json::Value = serde_json::from_str(&body).unwrap();
+                        let payload_b64 = jws["payload"].as_str().unwrap();
+                        let payload_raw = base64::engine::general_purpose::URL_SAFE_NO_PAD
+                            .decode(payload_b64)
+                            .unwrap();
+                        let payload: serde_json::Value =
+                            serde_json::from_slice(&payload_raw).unwrap();
+                        let csr_b64 = payload["csr"].as_str().unwrap();
+                        let csr_der = base64::engine::general_purpose::URL_SAFE_NO_PAD
+                            .decode(csr_b64)
+                            .unwrap();
+                        assert!(
+                            csr_der.len() > 100,
+                            "real CSR DER, not a placeholder string"
+                        );
+                        axum::Json(serde_json::json!({
+                            "status": "processing",
+                        }))
+                    }),
+                )
+                .route(
+                    "/order/1",
+                    axum::routing::post({
+                        let base = base.clone();
+                        move || {
+                            let base = base.clone();
+                            async move {
+                                axum::Json(serde_json::json!({
+                                    "status": "valid",
+                                    "certificate": format!("{base}/cert/1"),
+                                }))
+                            }
+                        }
+                    }),
+                )
+                .route(
+                    "/cert/1",
+                    axum::routing::post(|| async {
+                        "-----BEGIN CERTIFICATE-----\nMOCKCHAIN\n-----END CERTIFICATE-----\n"
+                    }),
+                );
+
+            let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{port}"))
+                .await
+                .unwrap();
+            tokio::spawn(async move { axum::serve(listener, app).await });
+
+            // Fail-closed first: a wildcard order with NO provider is
+            // rejected at the order site (never relayed, never
+            // mid-challenge).
+            let mut bare = mk_config();
+            bare.upstream_directory_url = format!("{base}/directory");
+            std::fs::create_dir_all(&bare.data_dir).unwrap();
+            let bare_client = UpstreamClient::new(&bare).unwrap();
+            let rejected = bare_client.new_order("*.prod.ibank.example.com").await;
+            assert!(matches!(
+                rejected,
+                Err(sentin8_acme_server::upstream::UpstreamError::Rejected(_))
+            ));
+            std::fs::remove_dir_all(&bare.data_dir).ok();
+
+            // With the provider configured against the mock API: the
+            // wildcard order drives dns-01 - the TXT record publishes
+            // through the provider, no http-01 token is captured, and
+            // forget_token clears the record.
+            let mut config = mk_config();
+            config.upstream_directory_url = format!("{base}/directory");
+            config.dns_provider = "cloudflare".into();
+            config.dns_api_token = "mock-token".into();
+            config.dns_zone = "ibank.example.com".into();
+            config.dns_api_base = format!("http://127.0.0.1:{dns_port}");
+            std::fs::create_dir_all(&config.data_dir).unwrap();
+            let client = UpstreamClient::new(&config).unwrap();
+
+            let (order, token_out, challenge_out, kind) =
+                client.new_order("*.prod.ibank.example.com").await.unwrap();
+            assert_eq!(kind, ChallengeKind::Dns01);
+            assert_eq!(token_out, "mock-dns01-token");
+            assert_eq!(challenge_out, format!("{base}/challenge/1"));
+            // No http-01 token captured for a dns-01 order.
+            assert!(client.challenge_tokens.read().await.is_empty());
+            // The TXT record published through the provider: the record
+            // name replaces the `*` label with `_acme-challenge`, and
+            // the value is the key authorization (token.digest).
+            let published = published.lock().await;
+            assert_eq!(published.len(), 1);
+            assert_eq!(
+                published[0].0,
+                "_acme-challenge.prod.ibank.example.com",
+                "the TXT name drops the wildcard label"
+            );
+            assert!(
+                published[0].1.starts_with("mock-dns01-token."),
+                "the TXT value is the key authorization (token.digest)"
+            );
+            assert_eq!(published[0].1.split('.').count(), 2);
+            drop(published);
+
+            // The relay flow proceeds: notify + finalize + poll + cert.
+            client.notify_challenge(&challenge_out).await.unwrap();
+            let (order, _csr_key_pem) = client
+                .finalize(&order, "*.prod.ibank.example.com")
+                .await
+                .unwrap();
+            let order = client.poll_order(&order).await.unwrap();
+            assert_eq!(order.status, "valid");
+            let cert = client
+                .download_cert(order.certificate.as_deref().unwrap())
+                .await
+                .unwrap();
+            assert!(cert.contains("BEGIN CERTIFICATE"));
+
+            // forget_token clears the TXT record (the proof never
+            // lingers past the order window).
+            assert!(cleared.lock().await.is_empty());
+            client.forget_token(&token_out).await;
+            assert!(!cleared.lock().await.is_empty(), "TXT record cleared");
+
+            std::fs::remove_dir_all(&config.data_dir).ok();
+        });
+    }
+
+    #[test]
+    fn order_site_reuse_skips_upstream_relay() {
+        install_provider();
+        // CERTTIER-2 (DESIGN §4.0a): a cached live upstream leaf short-
+        // circuits a NEW external order at the ORDER site - the mock
+        // /new-account and /new-order endpoints are counters that must
+        // stay at ZERO when a repeat order arrives. Proves the
+        // production-LE guard: a retry loop cannot drain the 300/account/
+        // 3h and the GLOBAL 50/registered-domain/week order limits once a
+        // live upstream leaf is cached.
+        use sentin8_acme_server::acme::{Identifier, NewOrderRequest};
+        use sentin8_acme_server::ca::CaFamily;
+        use sentin8_acme_server::state::AppState;
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        rt.block_on(async {
+            let probe = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let port = probe.local_addr().unwrap().port();
+            let base = format!("http://127.0.0.1:{port}");
+            drop(probe);
+
+            let upstream_hits =
+                std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let hits = upstream_hits.clone();
+            let nonce_hits =
+                std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let app = axum::Router::new()
+                .route(
+                    "/directory",
+                    axum::routing::get({
+                        let base = base.clone();
+                        let nonce_hits_local = nonce_hits.clone();
+                        move || {
+                            let base = base.clone();
+                            let nonce_hits_local = nonce_hits_local.clone();
+                            async move {
+                                nonce_hits_local
+                                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                                axum::Json(serde_json::json!({
+                                    "newAccount": format!("{base}/new-account"),
+                                    "newNonce": format!("{base}/new-nonce"),
+                                    "newOrder": format!("{base}/new-order"),
+                                }))
+                            }
+                        }
+                    }),
+                )
+                .route(
+                    "/new-account",
+                    axum::routing::post({
+                        let base = base.clone();
+                        let hits = hits.clone();
+                        move || {
+                            let base = base.clone();
+                            hits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            async move {
+                                (
+                                    axum::http::StatusCode::CREATED,
+                                    [
+                                        (
+                                            axum::http::header::LOCATION,
+                                            axum::http::HeaderValue::from_str(
+                                                &format!("{base}/acct/1"),
+                                            )
+                                            .unwrap(),
+                                        ),
+                                        (
+                                            axum::http::header::HeaderName::from_static(
+                                                "replay-nonce",
+                                            ),
+                                            axum::http::HeaderValue::from_static("n1"),
+                                        ),
+                                    ],
+                                    axum::Json(serde_json::json!({"status": "valid"})),
+                                )
+                            }
+                        }
+                    }),
+                )
+                .route(
+                    "/new-order",
+                    axum::routing::post({
+                        let hits = hits.clone();
+                        move || {
+                            hits.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                            async move { axum::http::StatusCode::INTERNAL_SERVER_ERROR }
+                        }
+                    }),
+                );
+            let listener = tokio::net::TcpListener::bind(format!("127.0.0.1:{port}"))
+                .await
+                .unwrap();
+            tokio::spawn(async move { axum::serve(listener, app).await });
+
+            let mut config = mk_config();
+            config.upstream_directory_url = format!("{base}/directory");
+            config.public_hostnames = vec!["example.dev".into()];
+            config.init_dirs().unwrap();
+
+            // Seed the cert store with a LIVE upstream-source leaf:
+            // sign with the platform CA for the DOMAIN, but stamp the
+            // metadata `source: "upstream"` (the reuse scan keys on the
+            // metadata's source field, not the actual signature).
+            let ca_family = CaFamily::ensure(&config).unwrap();
+            let (leaf_pem, key_pem) = ca_family
+                .sign_leaf("example.dev", &["example.dev".to_string()], 90)
+                .unwrap();
+            let cache_id = "reuse-seed-cert";
+            let cert_dir = config.cert_dir(cache_id);
+            std::fs::create_dir_all(&cert_dir).unwrap();
+            std::fs::write(config.cert_path(cache_id), leaf_pem).unwrap();
+            std::fs::write(config.cert_key_path(cache_id), key_pem).unwrap();
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_secs();
+            let meta = serde_json::json!({
+                "domain": "example.dev",
+                "pq_mode": sentin8::config::pq_mode(),
+                "issued_at": now,
+                "expires_at": now + 86400,
+                "serial": cache_id,
+                "revoked": false,
+                "source": "upstream",
+            });
+            std::fs::write(config.cert_meta_path(cache_id), meta.to_string()).unwrap();
+
+            let pool = sqlx::postgres::PgPoolOptions::new()
+                .max_connections(1)
+                .connect_lazy("postgresql://unused@localhost/none")
+                .unwrap();
+            let state = std::sync::Arc::new(AppState::new(config.clone(), ca_family, pool));
+
+            // FIRST order: store miss IS impossible here (seeded), so
+            // this order rides reuse. Any upstream contact would be a
+            // bug: the counters must read ZERO.
+            let req = NewOrderRequest {
+                identifiers: vec![Identifier {
+                    id_type: "dns".into(),
+                    value: "example.dev".into(),
+                }],
+                notBefore: None,
+                notAfter: None,
+                accountId: None,
+                keyThumbprint: None,
+            };
+            let resp = sentin8_acme_server::acme::new_order(
+                axum::extract::State(state.clone()),
+                axum::Json(req),
+            )
+            .await;
+            assert_eq!(resp.status(), axum::http::StatusCode::CREATED);
+            assert_eq!(
+                upstream_hits.load(std::sync::atomic::Ordering::SeqCst),
+                0,
+                "reuse at the order site never contacts the upstream (no /new-account, no /new-order)"
+            );
+            assert_eq!(
+                nonce_hits.load(std::sync::atomic::Ordering::SeqCst),
+                0,
+                "no directory fetch either"
+            );
+
+            std::fs::remove_dir_all(&config.data_dir).ok();
+        });
+    }
+
     /// A deterministic-ish ES256 test key (random is fine - the tests
     /// verify SHA-256/JWK relationships, not a fixed value).
     fn p256_test_signing_key() -> p256::ecdsa::SigningKey {
@@ -1009,14 +1614,9 @@ mod tests {
 
     /// Mirror of `upstream::key_authorization` for the format test (the
     /// private fn is not exported; the relationship is what's pinned).
+    /// RFC 8555 §8.1: the digest half is the RFC 7638 thumbprint itself
+    /// (b64url of one SHA-256 over the canonical JWK) - no second hash.
     fn key_authorization_of(token: &str, key: &p256::ecdsa::SigningKey) -> String {
-        use base64::Engine;
-        use sha2::Digest;
-        let thumbprint = sentin8_acme_server::upstream::jwk_thumbprint(key);
-        let digest = sha2::Sha256::digest(thumbprint.as_bytes());
-        format!(
-            "{token}.{}",
-            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(digest)
-        )
+        format!("{token}.{}", sentin8_acme_server::upstream::jwk_thumbprint(key))
     }
 }

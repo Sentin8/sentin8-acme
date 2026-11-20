@@ -307,6 +307,24 @@ pub async fn new_order(
     // REJECTED - there is no local proof of control for a public name, so
     // signing it would mint a trusted identity from an untrusted request.
     if all_external {
+        // Tier-A allowlist (CERTTIER-1, DESIGN §4.1a): even with proxy
+        // mode on, only operator-declared names relay - no name is ever
+        // relayed by fallthrough (invariant 16).
+        let allowed = req.identifiers.iter().all(|i| {
+            state
+                .config
+                .is_public_hostname_allowed(&i.value)
+        });
+        if !allowed {
+            return (
+                StatusCode::FORBIDDEN,
+                Json(serde_json::json!({
+                    "type": "urn:ietf:params:acme:error:rejectedIdentifier",
+                    "detail": "external domain is not on the tier-A allowlist (SENTIN8_ACME_PUBLIC_HOSTNAMES) - no name is relayed by fallthrough",
+                })),
+            )
+                .into_response();
+        }
         if state.config.proxy_mode_enabled() {
             return relay_new_order(&state, &req).await;
         }
@@ -513,12 +531,17 @@ pub async fn challenge_ready(
                         } else {
                             // External order - the mirror challenge was
                             // notified; translate into the upstream
-                            // notify. The upstream target rides the
+                            // notify. The upstream target + kind ride the
                             // authz's LINKED order's RelayState - the
                             // mirror authz never carries an upstream
                             // URL (the fetcher only ever sees local
-                            // URLs; RIGMODE-1's leak is closed).
-                            let upstream_url = authz.order_id.clone().and_then(|oid| {
+                            // URLs; RIGMODE-1's leak is closed). Both
+                            // challenge kinds ride the SAME kid-mode
+                            // POST-as-GET notify (the proof lives
+                            // upstream-side: the well-known route for
+                            // http-01, the TXT record for dns-01 - both
+                            // published at new-order time).
+                            let upstream_target = authz.order_id.clone().and_then(|oid| {
                                 let path = state
                                     .config
                                     .orders_dir()
@@ -526,12 +549,14 @@ pub async fn challenge_ready(
                                 let text = std::fs::read_to_string(path).ok()?;
                                 let v: serde_json::Value =
                                     serde_json::from_str(&text).ok()?;
-                                v.get("upstream")?
+                                let url = v
+                                    .get("upstream")?
                                     .get("challenge_url")?
-                                    .as_str()
-                                    .map(|s| s.to_string())
+                                    .as_str()?
+                                    .to_string();
+                                Some(url)
                             });
-                            let Some(upstream_url) = upstream_url else {
+                            let Some(upstream_url) = upstream_target else {
                                 return Json(serde_json::json!({
                                     "status": "invalid",
                                     "error": "external challenge missing its relay state",
@@ -1232,7 +1257,7 @@ pub fn is_local_domain(domain: &str, local_domains: &[String]) -> bool {
         || d.starts_with("127.")
         || d.starts_with("192.168.")
         || d.starts_with("10.")
-        || (172..=31).any(|o| d.starts_with(&format!("172.{o}.")))
+        || (16..=31).any(|o| d.starts_with(&format!("172.{o}.")))
     {
         return true;
     }
@@ -1361,12 +1386,25 @@ pub struct AccountRecord {
 pub struct RelayState {
     /// The upstream order (URLs, status, certificate URL).
     pub order: crate::upstream::UpstreamOrder,
-    /// The upstream's http-01 challenge token (map key in
-    /// `upstream.challenge_tokens`; the well-known route serves its
-    /// key authorization).
+    /// The upstream's challenge token (map key in
+    /// `upstream.challenge_tokens` for http-01; the dns-01 TXT clear
+    /// target key for dns-01).
     pub token: String,
-    /// The upstream's http-01 challenge URL (kid-mode notify target).
+    /// The upstream's challenge URL (kid-mode notify target).
     pub challenge_url: String,
+    /// The challenge kind the order drives (CERTWILD-1, DESIGN §4.2b) -
+    /// selected by identifier shape at new-order; the mirror authz's
+    /// `challenge_ready` reads it to route the notify (both kinds ride
+    /// the same kid-mode POST-as-GET).
+    #[serde(default = "default_http01")]
+    pub challenge_type: crate::upstream::ChallengeKind,
+}
+
+/// Serde default for `RelayState::challenge_type` - http-01 is the
+/// legacy record shape's implicit kind (pre-CERTWILD-1 records carry no
+/// field).
+fn default_http01() -> crate::upstream::ChallengeKind {
+    crate::upstream::ChallengeKind::Http01
 }
 
 /// Relay a new external order to the upstream CA (DESIGN §4.2). Creates
@@ -1378,15 +1416,98 @@ async fn relay_new_order(state: &Arc<AppState>, req: &NewOrderRequest) -> Respon
         return (StatusCode::BAD_REQUEST, "no identifiers").into_response();
     };
     let domain = identifier.value.clone();
-    let (upstream_order, token, challenge_url) = match state.upstream.new_order(&domain).await {
-        Ok(t) => t,
-        Err(crate::upstream::UpstreamError::Rejected(detail)) => {
-            return (StatusCode::BAD_REQUEST, detail).into_response()
-        }
-        Err(crate::upstream::UpstreamError::Unreachable(detail)) => {
-            return (StatusCode::BAD_GATEWAY, detail).into_response()
-        }
-    };
+
+    // Reuse-before-mint at the ORDER site (DESIGN §4.0a, CERTTIER-2):
+    // a live cached upstream leaf ends the order HERE - no upstream
+    // newOrder, no account trip. A public CA counts rate limits at
+    // newOrder (300/account/3h + the GLOBAL 50/registered-domain/week),
+    // so a failed-fetch retry loop that re-orders before finalize's
+    // reuse can catch it drains both (found live: 1920 upstream orders
+    // in one afternoon, the retry shape behind them).
+    if let Some((existing_id, _)) = find_reusable_cert(&state.config, &domain, "upstream") {
+        tracing::info!(domain = %domain, cert_id = %existing_id,
+            "reuse-before-mint: external order served from the cached certificate (no upstream newOrder)");
+        let order_id = Uuid::new_v4().to_string();
+        let authz_id = Uuid::new_v4().to_string();
+        let base = format!("{}/acme", state.issuer);
+        let order = OrderRecord {
+            id: order_id.clone(),
+            // `valid` is REQUIRED here: the tls fetcher's 4-step loop
+            // reads this record, POSTs finalize (which rides the
+            // final-site reuse path, idempotent) and downloads the
+            // cached PEM - a `pending` status would make the fetcher
+            // poll forever. The order mirrors the finalize-side reuse
+            // 200 shape, just returned at creation time.
+            status: "valid".into(),
+            identifiers: req.identifiers.clone(),
+            authorizations: vec![format!("{base}/authz/{authz_id}")],
+            finalize: format!("{base}/order/{order_id}/finalize"),
+            certificate: Some(format!("{base}/cert/{existing_id}")),
+            created_at: now_ts(),
+        };
+        let authz = AuthorizationRecord {
+            id: authz_id.clone(),
+            identifier: Identifier {
+                id_type: "dns".into(),
+                value: domain.clone(),
+            },
+            status: "valid".into(),
+            challenges: vec![ChallengeRecord {
+                id: Uuid::new_v4().to_string(),
+                challenge_type: "http-01".into(),
+                status: "valid".into(),
+                token: generate_nonce(),
+                url: format!("{base}/challenge/{}", Uuid::new_v4()),
+            }],
+            order_id: Some(order_id.clone()),
+        };
+        let order_path = state.config.orders_dir().join(format!("{order_id}.json"));
+        std::fs::write(&order_path, serde_json::to_string(&order).unwrap()).ok();
+        let authz_path = state
+            .config
+            .orders_dir()
+            .join(format!("authz-{authz_id}.json"));
+        std::fs::write(&authz_path, serde_json::to_string(&authz).unwrap()).ok();
+        emit_event(
+            state,
+            "sentin8:acme:order:created",
+            serde_json::to_value(&order).unwrap_or_default(),
+        )
+        .await;
+        return (
+            StatusCode::CREATED,
+            [
+                ("Location", format!("{base}/order/{order_id}")),
+                ("Content-Type", "application/json".to_string()),
+            ],
+            Json(order),
+        )
+            .into_response();
+    }
+
+    // Fail-closed shape gate (CERTWILD-1, DESIGN §4.2b): a wildcard
+    // identifier without a DNS provider can never validate - reject at
+    // the order site, not mid-challenge.
+    if state.config.requires_dns01(&domain) && !state.config.dns01_configured() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "type": "urn:ietf:params:acme:error:rejectedIdentifier",
+                "detail": "wildcard identifiers require the dns-01 challenge but no DNS provider is configured (SENTIN8_ACME_DNS_PROVIDER/SENTIN8_ACME_DNS_API_TOKEN/SENTIN8_ACME_DNS_ZONE)",
+            })),
+        )
+            .into_response();
+    }
+    let (upstream_order, token, challenge_url, challenge_type) =
+        match state.upstream.new_order(&domain).await {
+            Ok(t) => t,
+            Err(crate::upstream::UpstreamError::Rejected(detail)) => {
+                return (StatusCode::BAD_REQUEST, detail).into_response()
+            }
+            Err(crate::upstream::UpstreamError::Unreachable(detail)) => {
+                return (StatusCode::BAD_GATEWAY, detail).into_response()
+            }
+        };
 
     let order_id = Uuid::new_v4().to_string();
     let authz_id = Uuid::new_v4().to_string();
@@ -1407,6 +1528,7 @@ async fn relay_new_order(state: &Arc<AppState>, req: &NewOrderRequest) -> Respon
         order: upstream_order,
         token: token.clone(),
         challenge_url: challenge_url.clone(),
+        challenge_type,
     };
     let order_path = state.config.orders_dir().join(format!("{order_id}.json"));
     let order_with_upstream = serde_json::json!({
@@ -1432,7 +1554,7 @@ async fn relay_new_order(state: &Arc<AppState>, req: &NewOrderRequest) -> Respon
         status: "pending".into(),
         challenges: vec![ChallengeRecord {
             id: local_challenge_id.clone(),
-            challenge_type: "http-01".into(),
+            challenge_type: challenge_type.wire().into(),
             status: "pending".into(),
             token: token.clone(),
             url: format!("{base}/challenge/{local_challenge_id}"),
@@ -1528,10 +1650,17 @@ async fn relay_finalize_order(
     }
 
     // Finalize with a real CSR; persist the CSR key alongside the account.
+    // The proof token SURVIVES a failed finalize unless the upstream
+    // order terminally invalidated - a transient rejection (upstream
+    // unreachable, retryable orderNotReady) must leave the challenge proof
+    // servable: the validator fetches on its own schedule, and dropping
+    // the token would make every later retry permanently unvalidatable
+    // (found live, CERTTIER-1 public-mode run 2026-11-20). Only the
+    // SUCCESS path (or a terminal invalid, detected by the poll loop's
+    // own "invalid" branch) clears the proof.
     let (upstream_order, csr_key_pem) = match state.upstream.finalize(&relay.order, &domain).await {
         Ok(t) => t,
         Err(crate::upstream::UpstreamError::Rejected(detail)) => {
-            state.upstream.forget_token(&relay.token).await;
             return (StatusCode::BAD_REQUEST, detail).into_response();
         }
         Err(crate::upstream::UpstreamError::Unreachable(detail)) => {
@@ -1543,7 +1672,6 @@ async fn relay_finalize_order(
     let upstream_order = match state.upstream.poll_order(&upstream_order).await {
         Ok(o) => o,
         Err(crate::upstream::UpstreamError::Rejected(detail)) => {
-            state.upstream.forget_token(&relay.token).await;
             return (StatusCode::BAD_REQUEST, detail).into_response();
         }
         Err(crate::upstream::UpstreamError::Unreachable(detail)) => {
@@ -1606,6 +1734,7 @@ async fn relay_finalize_order(
             order: upstream_order,
             token: relay.token.clone(),
             challenge_url: relay.challenge_url.clone(),
+            challenge_type: relay.challenge_type,
         },
         "is_proxy": true,
     });

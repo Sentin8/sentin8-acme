@@ -24,6 +24,7 @@ use base64::Engine;
 use serde_json::{json, Value};
 
 use crate::config::AcmeConfig;
+use crate::dns01::DnsProvider;
 
 /// b64url, no padding - the JOSE alphabet (RFC 7515 §2).
 fn b64(data: &[u8]) -> String {
@@ -55,6 +56,29 @@ pub struct UpstreamOrder {
     /// Upstream certificate URL once `valid`.
     #[serde(default)]
     pub certificate: Option<String>,
+}
+
+/// The challenge type an external order drives (CERTWILD-1, DESIGN
+/// §4.2b): selected by identifier shape - a wildcard identifier routes
+/// to DNS-01 (HTTP-01 cannot validate the covered name's nonexistent
+/// HTTP endpoint), a plain hostname keeps HTTP-01.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ChallengeKind {
+    /// RFC 8555 §8.1 - token served at the well-known HTTP path.
+    Http01,
+    /// RFC 8555 §8.4 - key authorization in a TXT record.
+    Dns01,
+}
+
+impl ChallengeKind {
+    /// The ACME wire string for the challenge type.
+    pub fn wire(&self) -> &'static str {
+        match self {
+            ChallengeKind::Http01 => "http-01",
+            ChallengeKind::Dns01 => "dns-01",
+        }
+    }
 }
 
 /// Relay error surfaced to handlers: `Rejected` maps to a 4xx with the
@@ -93,6 +117,15 @@ pub struct UpstreamClient {
     /// hard count cap second (RIGMODE-1 eviction finding).
     pub challenge_tokens:
         std::sync::Arc<tokio::sync::RwLock<std::collections::HashMap<String, (std::time::Instant, String)>>>,
+    /// The DNS-01 provider (CERTWILD-1, DESIGN §4.2b) - present only when
+    /// a provider profile is configured; a wildcard order without it is
+    /// rejected at new-order (fail-closed).
+    pub dns: Option<std::sync::Arc<crate::dns01::CloudflareDns>>,
+    /// Captured DNS-01 publish targets, keyed by challenge token: the
+    /// TXT record name to clear when the order resolves or dies (a
+    /// lingering TXT record keeps proving zone control after the order).
+    dns01_records:
+        std::sync::Arc<tokio::sync::RwLock<std::collections::HashMap<String, String>>>,
 }
 
 /// Sign one JOSE signing input with ES256 (RFC 7518 §3.4 - SHA-256 digest,
@@ -151,12 +184,16 @@ fn set_0600(path: &std::path::Path) {
     }
 }
 
-/// The http-01 key authorization served at the well-known path (RFC 8555
-/// §8.1): `token "." base64url(sha256(thumbprint(account key)))`.
+/// The key authorization served at the well-known path and as the
+/// dns-01 TXT value (RFC 8555 Section 8.1): `token "." Thumbprint` -
+/// the digest half IS the account key's RFC 7638 thumbprint itself
+/// (base64url of the SHA-256 over the canonical JWK), ONE hash total.
+/// The earlier double-hash form (sha256 over the thumbprint STRING)
+/// mismatched LE's validator live - LE expected `<token>.pLA8...` and
+/// got the extra-hashed `<token>.u3SK...` (CERTTIER-1 public-mode run,
+/// 2026-11-20).
 fn key_authorization(token: &str, key: &p256::ecdsa::SigningKey) -> String {
-    use sha2::Digest;
-    let digest = sha2::Sha256::digest(jwk_thumbprint(key).as_bytes());
-    format!("{token}.{}", b64(&digest))
+    format!("{token}.{}", jwk_thumbprint(key))
 }
 
 /// Captured-token retention (RIGMODE-1 eviction finding). The plain
@@ -212,6 +249,21 @@ impl UpstreamClient {
             .use_preconfigured_tls(tls)
             .build()
             .map_err(|e| format!("http client: {e}"))?;
+        // DNS-01 provider (CERTWILD-1): built only for a known provider
+        // name; an unknown name fails the boot (a typo silently
+        // degrading wildcard orders to reject-at-new-order hides the
+        // misconfiguration).
+        let dns = match config.dns_provider.as_str() {
+            "" => None,
+            "cloudflare" => Some(std::sync::Arc::new(
+                crate::dns01::CloudflareDns::new(config)?,
+            )),
+            other => {
+                return Err(format!(
+                    "unknown SENTIN8_ACME_DNS_PROVIDER '{other}' (supported: cloudflare)"
+                ))
+            }
+        };
         Ok(Self {
             http,
             directory_url: config.upstream_directory_url.clone(),
@@ -220,6 +272,8 @@ impl UpstreamClient {
             account: Default::default(),
             nonce: Default::default(),
             challenge_tokens: Default::default(),
+            dns,
+            dns01_records: Default::default(),
         })
     }
 
@@ -464,13 +518,28 @@ impl UpstreamClient {
         ))
     }
 
-    /// Submit a newOrder for the identifier. On success the http-01 key
-    /// authorization is captured into the bounded challenge map (served by
-    /// the proxy's :80 listener → acme's well-known route).
+    /// Submit a newOrder for the identifier. The challenge type is
+    /// selected by identifier shape (CERTWILD-1, DESIGN §4.2b): a
+    /// wildcard routes to DNS-01 (TXT published through the provider),
+    /// a plain hostname keeps HTTP-01 (the key authorization is captured
+    /// into the bounded challenge map for the proxy's :80 listener).
     pub async fn new_order(
         &self,
         domain: &str,
-    ) -> Result<(UpstreamOrder, String, String), UpstreamError> {
+    ) -> Result<(UpstreamOrder, String, String, ChallengeKind), UpstreamError> {
+        let kind = if domain.starts_with("*.") {
+            ChallengeKind::Dns01
+        } else {
+            ChallengeKind::Http01
+        };
+        // Fail-closed (DESIGN §4.2b): a wildcard order without a DNS
+        // provider can never validate - reject at the order site, not
+        // mid-challenge.
+        if kind == ChallengeKind::Dns01 && self.dns.is_none() {
+            return Err(UpstreamError::Rejected(
+                "wildcard identifiers require the dns-01 challenge but no DNS provider is configured (SENTIN8_ACME_DNS_PROVIDER/_API_TOKEN/_ZONE)".into(),
+            ));
+        }
         let dir = self.fetch_directory().await?;
         let url = str_field(&dir, "newOrder")?;
         let payload = json!({
@@ -500,8 +569,9 @@ impl UpstreamClient {
             .filter_map(|v| v.as_str().map(|s| s.to_string()))
             .collect::<Vec<_>>();
         let finalize = str_field(&order, "finalize")?;
-        // Find the http-01 challenge in the first authz and capture the
-        // key authorization the proxy's :80 listener will serve.
+        // Find the challenge for the identifier's shape in the first
+        // authz: the token + URL for HTTP-01 (served from the bounded
+        // map), the token for DNS-01 (TXT published via the provider).
         let mut token = String::new();
         let mut challenge_url = String::new();
         if let Some(authz_url) = authorizations.first() {
@@ -521,7 +591,7 @@ impl UpstreamClient {
                 .cloned()
                 .unwrap_or_default()
             {
-                if ch.get("type").and_then(|v| v.as_str()) == Some("http-01") {
+                if ch.get("type").and_then(|v| v.as_str()) == Some(kind.wire()) {
                     token = ch
                         .get("token")
                         .and_then(|v| v.as_str())
@@ -537,58 +607,87 @@ impl UpstreamClient {
             }
         }
         if token.is_empty() || challenge_url.is_empty() {
-            return Err(UpstreamError::Rejected(
-                "new-order: upstream offered no http-01 challenge".into(),
-            ));
+            return Err(UpstreamError::Rejected(format!(
+                "new-order: upstream offered no {} challenge",
+                kind.wire()
+            )));
         }
         let acct = self.ensure_account().await?;
         let key = load_key(&acct.key_pem)?;
         let key_auth = key_authorization(&token, &key);
-        let now = std::time::Instant::now();
-        let mut map = self.challenge_tokens.write().await;
-        if map.len() >= MAX_CHALLENGE_TOKENS {
-            // Bounded: evict the OLDEST PAST-RETENTION entry (a token
-            // inside its validator window is never dropped while slots
-            // remain). In the pathological all-pending flood - every
-            // entry inside retention - the oldest still goes, keeping
-            // the hard memory bound.
-            let victim = map
-                .iter()
-                .filter(|(_, (at, _))| {
-                    at.elapsed() >= std::time::Duration::from_secs(CHALLENGE_TOKEN_RETENTION_SECS)
-                })
-                .min_by_key(|(_, (at, _))| *at)
-                .map(|(t, _)| t.clone())
-                .or_else(|| {
-                    map.iter()
+        match kind {
+            ChallengeKind::Http01 => {
+                let now = std::time::Instant::now();
+                let mut map = self.challenge_tokens.write().await;
+                if map.len() >= MAX_CHALLENGE_TOKENS {
+                    // Bounded: evict the OLDEST PAST-RETENTION entry (a token
+                    // inside its validator window is never dropped while slots
+                    // remain). In the pathological all-pending flood - every
+                    // entry inside retention - the oldest still goes, keeping
+                    // the hard memory bound.
+                    let victim = map
+                        .iter()
+                        .filter(|(_, (at, _))| {
+                            at.elapsed()
+                                >= std::time::Duration::from_secs(CHALLENGE_TOKEN_RETENTION_SECS)
+                        })
                         .min_by_key(|(_, (at, _))| *at)
                         .map(|(t, _)| t.clone())
-                });
-            if let Some(v) = victim {
-                map.remove(&v);
+                        .or_else(|| {
+                            map.iter()
+                                .min_by_key(|(_, (at, _))| *at)
+                                .map(|(t, _)| t.clone())
+                        });
+                    if let Some(v) = victim {
+                        map.remove(&v);
+                    }
+                }
+                map.insert(token.clone(), (now, key_auth));
+            }
+            ChallengeKind::Dns01 => {
+                // Publish the TXT record now (DESIGN §4.2b): the record
+                // must be live before the challenge notify - the
+                // upstream validates on its own schedule. The covered
+                // zone drops the `*.` label (RFC 8555 §8.4).
+                let covered = domain.strip_prefix("*.").unwrap_or(domain);
+                let record = crate::dns01::CloudflareDns::txt_record_name(covered);
+                if let Some(dns) = &self.dns {
+                    dns.publish_txt(&record, &key_auth)
+                        .await
+                        .map_err(UpstreamError::Unreachable)?;
+                }
+                // Track the publish target for the order-window clear.
+                self.dns01_records
+                    .write()
+                    .await
+                    .insert(token.clone(), record);
             }
         }
-        map.insert(token.clone(), (now, key_auth));
-        Ok((
-            UpstreamOrder {
-                url: order_url,
-                authorizations,
-                finalize,
-                status: "pending".into(),
-                certificate: None,
-            },
-            token,
-            challenge_url,
-        ))
+        Ok((UpstreamOrder {
+            url: order_url,
+            authorizations,
+            finalize,
+            status: "pending".into(),
+            certificate: None,
+        }, token, challenge_url, kind))
     }
 
-    /// Notify the upstream the http-01 challenge is ready for validation -
-    /// the upstream then fetches the key authorization from the proxy's
-    /// :80 listener (DESIGN §4.3).
+    /// Respond to the challenge - the RFC 8555 §7.5.1 activate POST.
+    ///
+    /// The CHALLENGE RESPONSE is NOT a POST-as-GET: RFC 8555 §7.5.1
+    /// requires the payload to be an EMPTY JSON OBJECT (`{}` - the JWS
+    /// body's "payload" field carries `base64url({})`), which tells the
+    /// CA "begin validating". An empty-STRING payload (POST-as-GET,
+    /// RFC §6.3) only READS the challenge - the CA answers 200 with the
+    /// still-pending challenge object and NEVER starts its validator
+    /// (found live, CERTTIER-1 public-mode run 2026-11-20: two orders
+    /// stayed `pending` for 40+ minutes with the token proven servable
+    /// from three continents, until the payload form was corrected;
+    /// the earlier RIGMODE-1 note that `{}` 400s was an
+    /// over-generalized fix - the {} 400 it observed belonged to the
+    /// POST-as-GET resources, not the challenge response).
     pub async fn notify_challenge(&self, challenge_url: &str) -> Result<(), UpstreamError> {
-        // The challenge-ready notify is a POST-as-GET shape (payload =
-        // empty string) - the `{}` payload 400s (RIGMODE-1 live finding).
-        let resp = self.post_kid_empty_payload(challenge_url).await?;
+        let resp = self.post_kid(challenge_url, &json!({})).await?;
         let status = resp.status();
         if !(200..300).contains(&status.as_u16()) {
             return Err(UpstreamError::Rejected(format!(
@@ -603,13 +702,67 @@ impl UpstreamClient {
     /// acme owns the certificate's private key; the caller's placeholder
     /// is never forwarded). Returns the CSR key PEM so the handler can
     /// persist it next to the issued certificate.
+    ///
+    /// RFC 8555 §7.4 sequencing: the upstream order must reach `ready`
+    /// (its authorizations valid) BEFORE the CSR is submitted - a public
+    /// CA validates the challenge asynchronously (LE staging: 10-60s),
+    /// so finalize first polls the order until it leaves `pending`
+    /// (bounded - the same window shape as `poll_order`), THEN submits
+    /// the CSR. Submitting against a `pending` order is a guaranteed
+    /// `orderNotReady` 403 whose error path would otherwise drop the
+    /// challenge proof while the validator still needs it (found live,
+    /// CERTTIER-1 public-mode run 2026-11-20).
     pub async fn finalize(
         &self,
         order: &UpstreamOrder,
         domain: &str,
     ) -> Result<(UpstreamOrder, String), UpstreamError> {
+        // Wait for the upstream order to become finalizable: `ready`
+        // (all authorizations valid) or `processing`/`valid` (already
+        // finalized by an earlier attempt). A `pending` order keeps the
+        // loop; `invalid` is terminal.
+        let mut settled = order.clone();
+        for _ in 0..120 {
+            let resp = self.post_kid_empty_payload(&order.url).await?;
+            let status = resp.status();
+            if !(200..300).contains(&status.as_u16()) {
+                return Err(UpstreamError::Rejected(format!(
+                    "poll {status}: {}",
+                    problem_detail(resp).await
+                )));
+            }
+            let order_json: Value = resp
+                .json()
+                .await
+                .map_err(|e| UpstreamError::Unreachable(format!("poll parse: {e}")))?;
+            settled = order.clone();
+            settled.status = str_or(&order_json, "status", "processing");
+            settled.certificate = order_json
+                .get("certificate")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+            match settled.status.as_str() {
+                "ready" | "processing" | "valid" => break,
+                "invalid" => {
+                    return Err(UpstreamError::Rejected(
+                        "upstream order invalid during pre-finalize poll".into(),
+                    ))
+                }
+                _ => tokio::time::sleep(std::time::Duration::from_millis(500)).await,
+            }
+        }
+        if settled.status == "pending" {
+            return Err(UpstreamError::Unreachable(
+                "pre-finalize poll: exhausted attempts (upstream order still pending)".into(),
+            ));
+        }
+        let order = &settled;
+
         let csr_key = rcgen::KeyPair::generate()
             .map_err(|e| UpstreamError::Unreachable(format!("csr key: {e}")))?;
+        // A wildcard identifier's CSR carries the wildcard SAN exactly as
+        // ordered (`*.zone` - RFC 8555 §7.1.3 admits the wildcard form
+        // in the CSR); the CN keeps the same value.
         let mut params = rcgen::CertificateParams::new(vec![domain.to_string()])
             .map_err(|e| UpstreamError::Unreachable(format!("csr params: {e}")))?;
         params.distinguished_name = rcgen::DistinguishedName::new();
@@ -694,10 +847,21 @@ impl UpstreamClient {
             .map_err(|e| UpstreamError::Unreachable(format!("cert read: {e}")))
     }
 
-    /// Drop a captured key authorization (order completed - success or
-    /// failure; the token must not linger servable).
+    /// Drop a captured challenge (order completed - success or
+    /// failure; the proof must not linger servable): the HTTP-01 key
+    /// authorization leaves the bounded map; a DNS-01 TXT record is
+    /// cleared at the provider (DESIGN §4.2b - a lingering record
+    /// keeps proving zone control after the order).
     pub async fn forget_token(&self, token: &str) {
         self.challenge_tokens.write().await.remove(token);
+        if let Some(record) = self.dns01_records.write().await.remove(token) {
+            if let Some(dns) = &self.dns {
+                if let Err(e) = dns.clear_txt(&record).await {
+                    tracing::warn!(record = %record, error = %e,
+                        "acme: dns-01 TXT clear failed - remove the record manually");
+                }
+            }
+        }
     }
 }
 

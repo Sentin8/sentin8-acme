@@ -43,6 +43,37 @@ pub struct AcmeConfig {
     /// 127.0.0.1) belong here - public CAs refuse loopback-resolving names,
     /// so the upstream path can never succeed for them.
     pub local_domains: Vec<String>,
+    /// Operator-declared tier-A allowlist (CERTTIER-1, DESIGN §4.1a) -
+    /// the ONLY external identifiers the upstream relay may order.
+    /// Entries are exact hostnames (`auth.ibank.example.com`) or
+    /// `*.`-prefixed zone wildcards (`*.prod.ibank.example.com`). An
+    /// external name NOT on the list is rejected at new-order with the
+    /// same 403 as proxy-off, regardless of proxy mode - no name is ever
+    /// relayed by fallthrough (invariant 16). From
+    /// `SENTIN8_ACME_PUBLIC_HOSTNAMES` (comma-separated).
+    pub public_hostnames: Vec<String>,
+    /// DNS provider for DNS-01 wildcard challenges (CERTWILD-1, DESIGN
+    /// §4.2b). Empty = no provider - a wildcard order is rejected
+    /// fail-closed at new-order. From `SENTIN8_ACME_DNS_PROVIDER`
+    /// (currently `cloudflare`).
+    pub dns_provider: String,
+    /// DNS provider API token (CERTWILD-1) - the operator-scoped
+    /// credential for TXT record publish/clear. Empty = no provider.
+    /// From `SENTIN8_ACME_DNS_API_TOKEN`. Stored by reference in env
+    /// conventions; acme reads the literal value from its own
+    /// operator-controlled environment (the same posture as
+    /// `SENTIN8_ACME_UPSTREAM_CONTACT`).
+    pub dns_api_token: String,
+    /// DNS zone the provider token is scoped to (CERTWILD-1) - e.g.
+    /// `ibank.example.com`. The `_acme-challenge` TXT record publishes
+    /// under `{zone}` (or its subzone, derived from the identifier).
+    /// From `SENTIN8_ACME_DNS_ZONE`.
+    pub dns_zone: String,
+    /// DNS provider API base URL (CERTWILD-1). Defaults to the
+    /// provider's public endpoint (`cloudflare` →
+    /// `https://api.cloudflare.com/client/v4`); the override exists for
+    /// test rigs and API mirrors. From `SENTIN8_ACME_DNS_API_BASE`.
+    pub dns_api_base: String,
     /// Database URL for the outbox table.
     pub database_url: String,
     /// Bus base URL for event publication.
@@ -110,6 +141,27 @@ impl AcmeConfig {
                 .map(|s| s.trim().to_ascii_lowercase())
                 .filter(|s| !s.is_empty())
                 .collect(),
+            public_hostnames: env::var("SENTIN8_ACME_PUBLIC_HOSTNAMES")
+                .unwrap_or_default()
+                .split(',')
+                .map(|s| s.trim().to_ascii_lowercase())
+                .filter(|s| !s.is_empty())
+                .collect(),
+            dns_provider: env::var("SENTIN8_ACME_DNS_PROVIDER")
+                .unwrap_or_default()
+                .trim()
+                .to_ascii_lowercase(),
+            dns_api_token: env::var("SENTIN8_ACME_DNS_API_TOKEN").unwrap_or_default(),
+            dns_zone: env::var("SENTIN8_ACME_DNS_ZONE")
+                .unwrap_or_default()
+                .trim()
+                .trim_matches('.')
+                .to_ascii_lowercase(),
+            dns_api_base: env::var("SENTIN8_ACME_DNS_API_BASE")
+                .unwrap_or_default()
+                .trim()
+                .trim_end_matches('/')
+                .to_string(),
             // (DESIGN §3): explicit override → else the
             // DERIVED identity DSN. The legacy operator `DATABASE_URL` is
             // NEVER a fallback: under the superuser role the unqualified
@@ -213,6 +265,54 @@ impl AcmeConfig {
     /// Whether ACME proxy mode is enabled (non-empty upstream URL).
     pub fn proxy_mode_enabled(&self) -> bool {
         !self.upstream_directory_url.is_empty()
+    }
+
+    /// Whether the identifier is on the tier-A allowlist (CERTTIER-1,
+    /// DESIGN §4.1a) - an exact-hostname entry matches itself, a
+    /// `*.{zone}` entry matches every single label under the zone
+    /// (RFC 8555 §7.1.3 wildcard semantics: exactly one label).
+    /// A plain-hostname identifier also matches a wildcard entry
+    /// (the covered name orders the wildcard's exact form); a
+    /// `*.{zone}` identifier matches the wildcard entry itself.
+    pub fn is_public_hostname_allowed(&self, identifier: &str) -> bool {
+        let id = identifier.to_ascii_lowercase();
+        self.public_hostnames.iter().any(|entry| {
+            let entry = entry.to_ascii_lowercase();
+            if let Some(entry_zone) = entry.strip_prefix("*.") {
+                // Wildcard entry: the wildcard identifier itself, or a
+                // covered name with exactly ONE label beneath the zone -
+                // `a.{zone}` matches, `a.b.{zone}` does not, `{zone}`
+                // does not (RFC 8555 §7.1.3 wildcard semantics).
+                if id == entry {
+                    return true;
+                }
+                match id.split_once('.') {
+                    Some((label, rest)) => !label.is_empty() && rest == entry_zone,
+                    None => false,
+                }
+            } else {
+                entry == id
+            }
+        })
+    }
+
+    /// Whether DNS-01 is required for the identifier shape (CERTWILD-1,
+    /// DESIGN §4.2b): a wildcard identifier cannot be validated by
+    /// HTTP-01 (RFC 8555 §8.4 - the challenge validates the covered
+    /// name's HTTP endpoint, which does not exist for `*`), so the
+    /// shape routes to DNS-01. The selection is by identifier shape,
+    /// never an operator knob.
+    pub fn requires_dns01(&self, identifier: &str) -> bool {
+        identifier.starts_with("*.")
+    }
+
+    /// Whether a DNS provider profile is configured for DNS-01 (an
+    /// empty provider, token, OR zone disables the path - each is
+    /// necessary; a partial profile is fail-closed as if absent).
+    pub fn dns01_configured(&self) -> bool {
+        !self.dns_provider.is_empty()
+            && !self.dns_api_token.is_empty()
+            && !self.dns_zone.is_empty()
     }
 
     /// Create the data directory layout (ca, accounts, orders, certificates).

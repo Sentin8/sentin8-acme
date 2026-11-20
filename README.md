@@ -90,13 +90,33 @@ graph TD
   Mixed orders are rejected. Local orders are signed directly by the
   Intermediate CA with HTTP-01 short-circuited (the challenge target is the
   platform's own network); external orders are relayed to the upstream ACME
-  provider when proxy mode is enabled - and rejected otherwise (the
-  platform CA never signs an unproven public name).
+  provider only when proxy mode is enabled AND the identifier is on the
+  tier-A allowlist (`SENTIN8_ACME_PUBLIC_HOSTNAMES`, CERTTIER-1) - anything
+  else external is rejected (the platform CA never signs an unproven public
+  name, and no name is ever relayed by fallthrough).
+- **Certificate tiers - the browser-edge boundary (CERTTIER-1).** Public
+  trust is needed only where an UNMANAGED browser terminates the handshake -
+  a browser population that cannot be enrolled into the platform root:
+  tenant OP surfaces, per-app BFFs, tenant admin UIs, storefronts. The
+  platform's own admin plane (`dash.ops.sys.*`, operator-browsed) stays
+  platform-signed - acme already plants the platform root into the
+  operator's OS + NSS trust stores. Everything else (the internal service
+  plane, mTLS workload pairs, the infra plane) trusts the platform CA by
+  construction, so it stays platform-signed and zero-cost. The
+  `SENTIN8_ACME_PUBLIC_HOSTNAMES` allowlist names exactly which
+  hostnames (or `*.` zone wildcards) the relay may order - the public cert
+  count per environment is fixed by the browser surface, independent of
+  how many services or verticals are enrolled.
 - **Upstream relay is a real RFC 8555 client.** External orders ride an
   ES256 account (key persisted in acme's data dir), JWS-signed requests
   with fresh nonces, a real rcgen CSR at finalize, and HTTP-01 challenge
   tokens served through the proxy's :80 listener
-  (`SENTIN8_PROXY_HTTP_PORT`) so the upstream can validate control. The
+  (`SENTIN8_PROXY_HTTP_PORT`) so the upstream can validate control.
+  Wildcard identifiers route to the DNS-01 challenge instead
+  (CERTWILD-1): the `_acme-challenge` TXT record publishes and clears
+  through a DNS provider API profile (`SENTIN8_ACME_DNS_PROVIDER`,
+  `SENTIN8_ACME_DNS_API_TOKEN`, `SENTIN8_ACME_DNS_ZONE` - a wildcard
+  order without a provider is rejected fail-closed, never relayed). The
   upstream certificate chain is cached locally like any other issued cert.
 - **Admission channels for client certificates** (each independently
   authenticated):

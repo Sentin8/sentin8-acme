@@ -21,6 +21,9 @@ pub mod admin_ui;
 pub mod ca;
 /// Environment configuration.
 pub mod config;
+/// DNS-01 challenge automation - TXT publish/clear through a bounded
+/// DNS provider set (CERTWILD-1, acme DESIGN.md §4.2b).
+pub mod dns01;
 /// Infrastructure TLS materialization (offline `--ensure-infra-tls` mode).
 pub mod infra_tls;
 /// OpenAPI spec assembly.

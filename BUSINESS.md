@@ -33,7 +33,7 @@ business value it delivers:
 | Area | Capabilities |
 |---|---|
 | Certificate authority | Two-tier CA hierarchy (Root 10-year, Intermediate 5-year); leaf certificates (90-day default); CA subjects named per PQ posture (`Sentin8 {Exclusive\|Hybrid\|Classical} Root/Intermediate CA`, intermediate with `OU=Sentin8:ACME`) so every mode's trust anchor is individually identifiable in trust stores and chain viewers |
-| TLS server certificates | ACME (RFC 8555) issuance for every platform domain - local domains (localhost, `.local`, private IPs, operator-declared `SENTIN8_ACME_LOCAL_DOMAINS` suffixes) signed directly; external domains relayed to an upstream public ACME provider (rejected outright when no upstream is configured) |
+| TLS server certificates | ACME (RFC 8555) issuance for every platform domain - local domains (localhost, `.local`, private IPs, operator-declared `SENTIN8_ACME_LOCAL_DOMAINS` suffixes) signed directly at zero cost; the browser edge (operator-allowlisted external names, `SENTIN8_ACME_PUBLIC_HOSTNAMES`) relayed to an upstream public ACME provider - rejected outright when no upstream is configured |
 | mTLS client certificates | `POST /v1/client-cert` - RFC 8705 client certificates for M2M workloads (CN `m2m-{service_name}`, ClientAuth EKU) |
 | Trust anchor distribution | Root CA download endpoints; automatic install into OS + Chromium/NSS trust stores |
 | Certificate revocation | Admin revocation (metadata + event announcement) |
@@ -61,8 +61,9 @@ business value it delivers:
 | ACME accounts | RFC 8555 account creation with JWK; account key thumbprint binding (RFC 7638 §6.2 verification) |
 | New orders | Single-identifier orders; local vs external domain classification - mixed orders rejected |
 | Local domains | Signed directly by the Intermediate CA with HTTP-01 challenge short-circuited (the challenge target is the platform's own network) |
-| External domains | Proxied to the upstream public ACME provider when proxy mode is enabled |
-| Challenges | HTTP-01 only (DNS-01 declared for upstream mode); local short-circuit avoids pointless self-fetch |
+| External domains | Relayed to the upstream public ACME provider only when proxy mode is enabled AND the name is on the operator's tier-A allowlist (`SENTIN8_ACME_PUBLIC_HOSTNAMES`) - everything else external is rejected; the browser edge pays for public trust, nothing else does (CERTTIER-1) |
+| Challenges | HTTP-01 for plain hostnames; DNS-01 for wildcard identifiers (the `_acme-challenge` TXT record published/cleared through the operator's DNS provider profile); local short-circuit avoids pointless self-fetch |
+| Wildcard certificates | A `*.{zone}` order collapses a whole browser plane to ONE public-CA order - available only with the DNS provider profile configured (fail-closed reject otherwise) |
 | Finalize + download | Combined PEM (leaf + chain + key) for local issuance; cert-only for upstream (key never leaves the requester) |
 | Revocation | `POST /acme/revoke-cert` (event-announced); admin revoke path marks metadata + emits event |
 | Trust anchors | `GET /v1/ca/root.crt`, `GET /v1/ca/intermediate.crt` public downloads |
@@ -119,6 +120,8 @@ failure is warn-and-drop (at-least-once is not required).
 10. A lost CA dir regenerates - previously issued leafs then fail validation until re-issued (fail-closed).
 11. Acme's database identity is its own declared service role - it never borrows another service's role or a shared dev role; a missing or mismatched credential aborts boot (fail fast) rather than degrading the certificate plane silently.
 12. **Mint overload is refused UP FRONT, deterministically, and audibly** - 503 + `Retry-After` at the queue cap, never an accepted-but-stalled mint; refusals are always warn-logged.
+13. **Public trust is earned by allowlist, never by fallthrough (CERTTIER-1)** - an external name relays to the public CA only when the operator declared it on the tier-A allowlist; every other external name is rejected regardless of proxy mode. The platform CA signs platform-tier names only; the upstream CA signs browser-edge names only.
+14. **A wildcard order requires DNS-01 (CERTWILD-1)** - the challenge kind is decided by the identifier's shape, never a knob; a wildcard order without the DNS provider profile configured is rejected fail-closed at order time, never relayed into a challenge it cannot win. The proof TXT record is cleared the moment the order resolves.
 
 ## 6. Target-User Roles & Use Cases
 
