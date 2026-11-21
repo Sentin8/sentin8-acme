@@ -657,6 +657,27 @@ pub async fn finalize_order(
         return relay_finalize_order(&state, &order_id, &order, &parsed).await;
     }
 
+    // CERTTIER-2 companion: a PLAIN record that is already `valid` with a
+    // certificate is the ORDER-SITE reuse shape (§4.0a - the record the
+    // reuse path returns at new-order). The fetcher's 4-step loop still
+    // POSTs finalize; short-circuit the same idempotent answer instead of
+    // falling into the local-branch re-derivation, which would 403 the
+    // external identifier ("order is not local") and break the fetch -
+    // found live on the first LE-production boot (2026-11-21).
+    if order.status == "valid" {
+        if let Some(cert_url) = &order.certificate {
+            tracing::info!(order_id = %order_id, cert = %cert_url,
+                "reuse-before-mint: finalize on an already-valid order returns the cached certificate");
+            emit_event(
+                &state,
+                "sentin8:acme:order:finalized",
+                serde_json::to_value(&order).unwrap_or_default(),
+            )
+            .await;
+            return Json(order).into_response();
+        }
+    }
+
     let mut order = order;
 
     // Defense in depth (DESIGN §4.1 invariant 10): a LOCAL order signs
