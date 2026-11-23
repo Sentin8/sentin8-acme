@@ -187,6 +187,19 @@ graph TD
   CA stores are per-mode directory scoped (PQCA-1), so multi-mode ensure
   is safe; `--ensure-infra-tls` stays active-mode only (the infra leafs
   are singletons at fixed paths).
+- **System trust install (`scripts/ca-trust.sh`, CATRUST-1).** Publishes
+  the platform CA into the OS and NSS trust stores: the root AND the
+  intermediate, for all three families (`install`, or `install <mode>` for
+  one), with `status` and `uninstall` alongside. The boot-time install
+  (`SENTIN8_ACME_INSTALL_TRUST_STORE`) covers only the ACTIVE family's
+  root and never the intermediate, which leaves a system verifier unable
+  to build leaf -> intermediate -> root. Every anchor filename carries its
+  family (`sentin8-classical-root-ca.crt`, ...) because the three CAs are
+  unrelated authorities - an unnamespaced anchor cannot be told apart
+  across postures, and the script removes the legacy unnamespaced names.
+  Each certificate gets its own file: the published `acme-ca/root-ca.crt`
+  is a two-cert bundle and Debian's `update-ca-certificates` does not
+  split bundles.
 - **Reconstructed rcgen issuers + stored PEM bytes.** rcgen cannot
   re-sign an existing certificate, so loading reconstructs
   `Certificate` objects for signing - which are self-signed and MUST

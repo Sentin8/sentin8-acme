@@ -165,6 +165,76 @@ flowchart TD
   for both modes - no CLI override exists; the tree's `.env` is the single
   operator truth (the same rationale as the appliance hand-off contract).
 
+### 4.0b Platform CA trust install - all three families (CATRUST-1)
+
+`scripts/ca-trust.sh` publishes the platform CA into the OS and NSS trust
+stores. It is an operator script, not a service side effect, for the
+reason that makes the rest of this section necessary: the boot-time
+install (`SENTIN8_ACME_INSTALL_TRUST_STORE`) publishes the ACTIVE
+family's **root only**, best-effort, and the intermediate never reaches
+the OS store at all (`server.rs` calls `install_to_os_trust_store` on the
+root; `install_intermediate_to_nss` is NSS-only). A system verifier
+anchored on that root therefore cannot build leaf -> intermediate -> root,
+which is the failure shape behind `curl --cacert` and `openssl s_client
+-CAfile` errors and behind Chromium's occasional path-building refusal.
+
+```mermaid
+flowchart LR
+    A["sudo scripts/ca-trust.sh install"] --> B["anchor dir<br/>/usr/local/share/ca-certificates"]
+    A --> C["NSS ~/.pki/nssdb"]
+    subgraph SRC["{SENTIN8_ACME_DATA_DIR}/{mode}/ca/"]
+        R["root-ca.crt"]
+        I["intermediate-ca.crt"]
+    end
+    SRC --> B
+    SRC --> C
+    B --> D["sentin8-classical-root-ca.crt<br/>sentin8-classical-intermediate-ca.crt<br/>sentin8-hybrid-root-ca.crt<br/>sentin8-hybrid-intermediate-ca.crt<br/>sentin8-exclusive-root-ca.crt<br/>sentin8-exclusive-intermediate-ca.crt"]
+    D --> E["update-ca-certificates --fresh"]
+    E --> F["system + browser trust every posture"]
+```
+
+**All three families, or one by name.** `install` with no argument
+publishes `classical`, `hybrid`, and `exclusive`; `install classical`
+publishes one. The three are entirely different authorities with
+mode-namespaced subjects (PQCA-3: `Sentin8 {Classical|Hybrid|Exclusive}
+Root CA`), so installing all of them is not redundant - it is what lets a
+posture flip work without a re-install.
+
+**Every anchor filename carries its family.** This is the load-bearing
+detail. An unnamespaced `sentin8-root-ca.crt` gives no way to tell a
+classical root from an exclusive one, and the two are unrelated CAs -
+verifying against the wrong one fails with the same "unable to get local
+issuer certificate" shape as not trusting it at all. The script names
+files `sentin8-{mode}-{root|intermediate}-ca.crt` and **deletes the
+legacy unnamespaced names** (`sentin8-root-ca.crt`,
+`sentin8-intermediate-ca.crt`, `sentin8-local-ca.crt`) on every install
+and uninstall, so an ambiguous leftover can never be mistaken for another
+posture.
+
+**One file per certificate, never a bundle.** Debian's
+`update-ca-certificates` copies each file in the anchor directory into the
+bundle verbatim and does not split a PEM holding several certificates. The
+published `{secrets}/acme-ca/root-ca.crt` is a two-certificate bundle
+(root + intermediate), so installing that bundle as a single anchor would
+make the *intermediate* the anchor and leave the root as an unverified
+appendage. Six single-certificate files avoid that entirely.
+
+**Commands.** `install [mode...]`, `uninstall` (alias `delete`, `remove`),
+`status` (read-only, needs no privilege - it prints each anchor with its
+classified kind and subject). `uninstall` removes every `sentin8-*.crt`
+anchor plus the legacy names, refreshes the bundle, and clears the NSS
+entries.
+
+**Privilege.** `install`/`uninstall` write the system anchor directory and
+rebuild the bundle, so both require root (one password prompt). `status`
+does not. The NSS half writes the invoking user's `~/.pki/nssdb` via
+`SUDO_USER`, and is best-effort because `certutil` is frequently absent.
+
+**Test/sysroot mode.** `SENTIN8_CA_ANCHOR_DIR` overrides the detected
+anchor directory and, together with `SENTIN8_CA_SKIP_REFRESH=1`, lets the
+script run unprivileged against a staging directory (container images and
+the install test do exactly this).
+
 **Outbox relay - the DBX producer path.** Acme boots custom (not via the
 shell), so `server.rs` spawns the shared outbox relay itself
 (`sentin8::bus::outbox::spawn_relay`) with a `build_with_dcr` client for
