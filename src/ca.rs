@@ -143,6 +143,25 @@ impl CaFamily {
         }
     }
 
+    /// The family's certificate revocation list (DER) - the mdoc DS
+    /// certificate's CRLDP target (`GET /crl`, DESIGN §9a.19x
+    /// certificate-profile pass). The ISO 18013-5 CRL profile the suite's
+    /// `ValidateMdocDsCertificateCrl` checks: a v2 CRL (rcgen writes the
+    /// version-2 form whenever extensions exist - AKI + CRL Number are
+    /// always included) with the nextUpdate at most 90 days after
+    /// thisUpdate (the profile's B.2 cadence; 7 days, the same window the
+    /// suite's reference publisher uses), the Issuer DN = the
+    /// intermediate's subject, signed by the intermediate (the leafs'
+    /// issuer). No revoked entries - the store keeps no revocation
+    /// list yet, and the profile forbids an EMPTY revokedCertificates
+    /// member (omission is the correct empty form).
+    pub fn crl_der(&self) -> Result<Vec<u8>, String> {
+        match self {
+            Self::Classical(ca) => ca.crl_der(),
+            Self::Pq(_) => Err("the PQ CA family serves no CRL endpoint (the platform runs the classical family for the rig)".into()),
+        }
+    }
+
     /// Sign a client-auth (mTLS workload) leaf with the family's chain.
     pub fn sign_client_leaf(
         &self,
@@ -622,6 +641,19 @@ impl CaHierarchy {
             KeyUsagePurpose::KeyEncipherment,
         ];
         params.extended_key_usages = vec![ExtendedKeyUsagePurpose::ServerAuth];
+        // RFC 5280 4.2.1.13: the leaf names its CRL's distribution point -
+        // the suite's FetchMdocDsCertificateCrl requires the DS cert to
+        // carry a CRLDP (an mdoc reader must establish the DS cert's
+        // revocation state). The point lives on the CA plane relative to
+        // SENTIN8_DOMAIN.
+        let crldp_host = {
+            let domain = std::env::var("SENTIN8_DOMAIN")
+                .unwrap_or_else(|_| "local.sentin8.dev".into());
+            format!("https://acme.ops.sys.{domain}/crl")
+        };
+        params.crl_distribution_points = vec![rcgen::CrlDistributionPoint {
+            uris: vec![crldp_host],
+        }];
         // webpki (rustls) builds the chain more reliably with an Authority
         // Key Identifier referencing the issuing Intermediate CA's SKI.
         params.use_authority_key_identifier_extension = true;
@@ -679,6 +711,33 @@ impl CaHierarchy {
         let cert_pem = self.full_chain_pem(leaf_cert.pem().as_bytes());
         let key_pem = leaf_key.serialize_pem().into_bytes();
         Ok((cert_pem, key_pem))
+    }
+
+    /// Mint the family's certificate revocation list (DER).
+    ///
+    /// ISO 18013-5 CRL shape (DESIGN §9a.19x): the intermediate CA signs
+    /// (its keyUsage carries CrlSign), the CRL Number rides the current
+    /// epoch-millis (monotonic, the suite's CRL Number extension check),
+    /// AKI is included by rcgen, and nextUpdate keeps the 7-day B.2
+    /// cadence. No revoked entries (an EMPTY revokedCertificates member
+    /// is a profile violation - the omission is the correct empty form).
+    pub fn crl_der(&self) -> Result<Vec<u8>, String> {
+        use rcgen::{CertificateRevocationListParams, SerialNumber};
+        let now = time::OffsetDateTime::now_utc();
+        let params = CertificateRevocationListParams {
+            this_update: now,
+            next_update: now + time::Duration::days(7),
+            crl_number: SerialNumber::from(
+                now.unix_timestamp().max(0) as u64,
+            ),
+            issuing_distribution_point: None,
+            revoked_certs: Vec::new(),
+            key_identifier_method: rcgen::KeyIdMethod::Sha256,
+        };
+        let crl = params
+            .signed_by(&self.intermediate_cert, &self.intermediate_key)
+            .map_err(|e| format!("mint CRL: {e}"))?;
+        Ok(crl.der().to_vec())
     }
 
     /// Get the Root CA certificate PEM.

@@ -57,6 +57,7 @@ pub fn router_with_shed(
         )
         .route("/v1/ca/root.crt", get(acme::get_root_ca))
         .route("/v1/ca/intermediate.crt", get(acme::get_intermediate_ca))
+        .route("/crl", get(acme::get_crl))
         // ── Client-certificate issuance ──
         .route("/v1/client-cert", post(acme::issue_client_cert))
         // ── Admin UI (RFW) ──

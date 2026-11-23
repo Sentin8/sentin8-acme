@@ -959,6 +959,39 @@ pub async fn get_intermediate_ca(State(state): State<Arc<AppState>>) -> impl Int
     )
 }
 
+/// `GET /crl` - the intermediate CA's certificate revocation list (DER).
+///
+/// The mdoc DS certificate's CRL Distribution Point target (DESIGN
+/// §9a.19x certificate-profile pass): the suite's
+/// `FetchMdocDsCertificateCrl` fetches this with
+/// `Accept: application/pkix-crl` and validates the ISO 18013-5 CRL
+/// shape (a v2 CRL with the AKI + CRL Number extensions, no empty
+/// revokedCertificates member, nextUpdate within 90 days).
+#[utoipa::path(
+    get,
+    operation_id = "ca.crl",
+    path = "/crl",
+    responses(
+        (status = 200, description = "Certificate revocation list (DER)", content_type = "application/pkix-crl"),
+    ),
+    security(),
+)]
+pub async fn get_crl(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    match state.ca.crl_der() {
+        Ok(der) => (
+            StatusCode::OK,
+            [("Content-Type", "application/pkix-crl".to_string())],
+            der,
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("CRL mint failed: {e}"),
+        )
+            .into_response(),
+    }
+}
+
 // ── Client-certificate issuance ─────────────────────────────────────────
 
 /// Request body for `POST /v1/client-cert`.
