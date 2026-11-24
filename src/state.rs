@@ -26,10 +26,12 @@ pub struct AppState {
     /// renewal sweep) call this field's `CaFamily` dispatch - the
     /// runtime serves the family the active mode demands.
     pub ca: CaFamily,
-    /// The upstream ACME relay (external domains, DESIGN §4.2). Built
-    /// from the same config; a disabled proxy mode leaves it idle -
-    /// every external order is rejected at new-order before it is used.
-    pub upstream: UpstreamClient,
+    /// The upstream ACME relay (external domains, DESIGN §4.2). `None` when
+    /// this deployment may not order externally - either
+    /// `SENTIN8_ACME_FORCE_INTERNAL` is set or no upstream directory is
+    /// configured. The client is then never constructed: a box that can
+    /// only use the platform CA has no outbound ACME path at all.
+    pub upstream: Option<UpstreamClient>,
     /// Issuer base URL used to build authz/finalize/cert URLs.
     pub issuer: String,
     /// In-memory nonce store (replay protection, RFC 8555 §6.5).
@@ -38,6 +40,11 @@ pub struct AppState {
     pub pool: sqlx::PgPool,
     /// Shared Shield policy-admin surface.
     pub admin: sentin8::shield::admin::SharedAdminState,
+    /// Which hostnames may be served by a public CA (DESIGN §4.1b):
+    /// the enroll/app-creation-published `tls:exposure` map, boot-loaded
+    /// into memory. Absent ⇒ internal (platform CA). The order path reads
+    /// this snapshot - no DB, no network.
+    pub exposure: sentin8::auth::workload_registry::ExposureMap,
 }
 
 impl AppState {
@@ -76,9 +83,22 @@ impl AppState {
         );
         let policy = engine
             .unwrap_or_else(|| std::sync::Arc::new(crate::policy::Engine::new("sentin8:acme")));
-        let upstream = UpstreamClient::new(&config)
-            .map_err(|e| format!("upstream client init: {e}"))
-            .expect("upstream client init");
+        // Lazy by design (DESIGN §4.1b): a deployment that may not order
+        // externally never builds the upstream client - force-internal and
+        // upstream-less boxes have no outbound ACME path at all.
+        let upstream = if config.may_order_external() {
+            Some(
+                UpstreamClient::new(&config)
+                    .map_err(|e| format!("upstream client init: {e}"))
+                    .expect("upstream client init"),
+            )
+        } else {
+            tracing::info!(
+                force_internal = config.force_internal,
+                "acme: no upstream relay - every order is signed by the platform CA"
+            );
+            None
+        };
         Self {
             admin: sentin8::shield::admin::SharedAdminState {
                 service: "sentin8:acme".to_string(),
@@ -93,6 +113,12 @@ impl AppState {
             nonces: RwLock::new(HashMap::new()),
             pool,
             policy,
+            // Fail-open bootstrap: an empty map classifies everything
+            // internal (platform CA) until the TTL refresh loop heals it
+            // - never the other way round (DESIGN §4.1).
+            exposure: sentin8::auth::workload_registry::ExposureMap::boot_load_empty(
+                "sentin8:acme",
+            ),
         }
     }
 }

@@ -494,7 +494,7 @@ the old SCRAM-tier distinction is retired with the passwords):
 | public (RFC 8555) | `GET /acme/directory` | none | - |
 | public | `GET/HEAD /acme/new-nonce` | none (single-use in-memory nonce) | - |
 | public | `POST /acme/new-account` | JWK in body | `sentin8:acme:account:created` |
-| public | `POST /acme/new-order` | none (local/external classified by domain; external orders require the `SENTIN8_ACME_PUBLIC_HOSTNAMES` allowlist, §4.1a) | `sentin8:acme:order:created` |
+| public | `POST /acme/new-order` | none (the `tls:exposure` map decides - an `external` entry relays upstream, §4.1) | `sentin8:acme:order:created` |
 | public | `GET /acme/authz/{id}` | none | - |
 | public | `POST /acme/challenge/{id}` | HTTP-01 check (local short-circuit) | - |
 | public | `GET /acme/order/{id}` | none | - |
@@ -627,173 +627,199 @@ flowchart TD
 - **DNS-01 orders included:** a wildcard order against a cached
   wildcard leaf reuses identically (the domain value is `*.{zone}`,
   matching the cached cert's domain).
-- **Interaction with the allowlist:** an allowlisted name that misses
-  the cache relays upstream exactly as before - the guard only removes
-  REDUNDANT order creation; it never relaxes the gate (§4.1a).
+- **Reuse-before-mint applies to every external order.** A hit returns the
+  cached leaf at the ORDER site (§4.0a) - the guard removes redundant order
+  creation, it never changes the classification.
 
 ### 4.1 Domain classification policy
 
-Every order is classified **local** or **external** at `POST /acme/new-order`
-time. The decision is a pure function of the identifier and two config
-sources - never of DNS resolution (no network on the order path, no
-TOCTOU between classification and signing):
+Every order is classified **internal** or **external** at
+`POST /acme/new-order` time. The decision is a lookup in a published
+exposure map - never DNS, never hostname parsing, never a per-name env
+list.
 
-1. **Built-in local forms**: `localhost`, `*.localhost`, `*.local`, and
-   RFC 1918 loopback/private IP literals (`127.*`, `10.*`, `192.168.*`,
-   `172.16.*`-`172.31.*`).
-2. **Operator-declared local domains**: any suffix listed in
-   `SENTIN8_ACME_LOCAL_DOMAINS` (comma-separated, e.g.
-   `local.sentin8.dev,local.ibank.dev`). A domain equal to or ending with
-   `.{suffix}` classifies local. This is the dev-loop escape hatch: the
-   operator points a public wildcard zone (e.g.
-   `*.local.sentin8.dev` → `127.0.0.1`) at the dev box and declares the
-   zone local - platform hostnames under it are signed by the platform
-   CA directly, with HTTP-01 short-circuited, regardless of upstream
-   proxy mode.
+**The declaration is made at enrollment, by the thing that knows.**
+A service declares its exposure in its registration; an app instance
+declares it when created. The declaration is published to Valkey under
+`tls:exposure` (§4.1b) and acme reads it at boot into an in-memory map.
 
-Rules that follow classification:
+```
+tls:exposure  (Valkey hash)
+  field: hostname or `*.{zone}`      value: "external"
+```
 
+Rules:
+
+- **Most-specific match wins.** An exact hostname beats a zone entry.
+  This is what makes `dash.ops.sys.{root} → external` coexist with
+  `*.ops.sys.{root} → internal`.
+- **Unknown ⇒ internal.** A hostname with no entry is signed by the
+  platform Intermediate CA. Fail-safe: an unpublished name never reaches
+  a public CA.
+- **Built-in internal forms** need no entry: `localhost`,
+  `*.localhost`, `*.local`, and RFC 1918 loopback/private literals
+  (`127.*`, `10.*`, `192.168.*`, `172.16.*`-`172.31.*`).
 - **Mixed orders are rejected** (`400 urn:…:malformed`) - a certificate
   must not mix platform-CA-signed and upstream-signed names; the trust
   chains are disjoint.
-- **Local orders** are signed directly by the Intermediate CA at finalize,
-  after their HTTP-01 challenge short-circuits to `valid`.
-- **External orders** are relayed to the upstream ACME provider when
-  proxy mode is on (`SENTIN8_ACME_UPSTREAM_DIRECTORY_URL` non-empty) AND
-  the identifier is on the `SENTIN8_ACME_PUBLIC_HOSTNAMES` tier-A
-  allowlist (§4.1a); anything else external is **rejected** - an
-  external name has no local proof of control,
-  so signing it would mint a publicly-trusted-looking identity from an
-  untrusted request (CA-integrity hole: acme's Root sits in the OS + NSS
-  trust stores of every dev box).
+- **Internal orders** are signed directly by the Intermediate CA at
+  finalize, after their HTTP-01 challenge short-circuits to `valid`.
+- **External orders** relay to the upstream provider
+  (`SENTIN8_ACME_UPSTREAM_DIRECTORY_URL`). When no upstream is
+  configured, an external order is **rejected** - never silently
+  downgraded to the platform CA, because the name is publicly resolvable
+  and the platform root is not in the public trust store.
 - Classification is decided once per order and stored in the order record;
   the finalize path re-derives and re-checks it (defense in depth).
 
 ```mermaid
 flowchart TD
-    O["POST /acme/new-order<br/>identifier i"] --> B{"i ∈ builtin local forms<br/>OR suffix ∈ SENTIN8_ACME_LOCAL_DOMAINS?"}
-    B -- yes --> L[local order → Intermediate CA signs<br/>HTTP-01 short-circuit]
-    B -- no --> W{"proxy mode AND<br/>i ∈ SENTIN8_ACME_PUBLIC_HOSTNAMES?<br/>(§4.1a tier-A allowlist)"}
-    W -- yes --> P[external order → upstream relay §4.2<br/>wildcard shape → DNS-01 §4.2b]
-    W -- no --> R["403 rejected - no local proof of control<br/>and no tier-A declaration"]
+    O["POST /acme/new-order<br/>identifier i"] --> B{"i ∈ builtin local forms?"}
+    B -- yes --> L["internal order<br/>Intermediate CA + HTTP-01 short-circuit"]
+    B -- no --> X{"exact or zone entry in<br/>tls:exposure?"}
+    X -- "external" --> P["external order<br/>upstream relay §4.2<br/>wildcard ⇒ DNS-01 §4.2b"]
+    X -- "no entry" --> L
+    X -.->|"external but no upstream configured"| R["403 rejected"]
 ```
 
-### 4.1a Certificate tiers - the browser-edge boundary (CERTTIER-1)
+### 4.1a Why some hosts must be public - the browser chain
 
-The per-order local/external classification answers **who signs**; the
-tier policy answers **who needs public trust at all**. A certificate
-needs a publicly-trusted CA (the upstream relay) **only when the TLS
-client of that hostname is an arbitrary, unmanaged browser** - a client
-population that cannot be enrolled into the platform root by any
-mechanism acme controls. Every other client population already trusts
-the platform CA by construction:
+A certificate needs a publicly-trusted CA **only when the TLS client of
+that hostname is an arbitrary, unmanaged browser**. The decisive fact is
+that this need is **transitive along the browser's redirect chain**: if
+`dash.ops.sys.{root}` redirects the browser to
+`auth.ops.sys.{root}/oauth/authorize` (`sentin8-bff/src/handlers.rs`,
+`resolve_tenant_sentin8_auth_url` → `sentin8_auth_base_url`), then
+**both** must be publicly trusted. Making one public and leaving the
+other on the platform CA yields a page that loads and a login that dies
+with `ERR_CERT_AUTHORITY_INVALID`.
 
-| Client population | Why it trusts the platform root |
+So the `external` set is a **connected component of the browser flow**,
+not a per-hostname preference:
+
+| hostname | external? | why |
+|---|---|---|
+| `dash.ops.sys.{root}` | yes (declared) | the operator's entry point for an unmanaged browser |
+| `auth.ops.sys.{root}` | yes (required) | every login redirects here from `dash`/`bff` |
+| `bff.ops.sys.{root}` | yes (required) | the SPA's API + session surface |
+| platform service plane | no | dialed by services, verified by the mTLS client |
+
+**The mTLS consequence.** Internal callers verify peer server
+certificates through `build_mtls_client`, which historically trusted the
+platform CA **only** (`sdk/core/middleware/src/mtls.rs`: a single
+`add_root_certificate`, no `tls_built_in_root_certs`). An external
+`auth.ops.sys` is therefore only reachable by the fleet if that client
+also accepts the upstream CA. The client gains
+`SENTIN8_ACME_UPSTREAM_CA_PEM` as a second root - exactly the CA that
+signed the hostnames, not arbitrary public roots.
+
+**What does NOT change:** client-certificate verification (the workload
+identity channel) is server-side and remains platform-CA-only
+(`acceptor.rs` builds its `WebPkiClientVerifier` store solely from
+`client_ca_pem`). The CN → role mapping, Shield authorization, and the
+workload registry are untouched. No code uses a *server* certificate's
+issuer as an authorization signal.
+
+### 4.1b The exposure map - declared at enrollment (TLS-EXPOSURE-1)
+
+The map lives in Valkey, written by the enrollment/app-creation plane and
+read by acme - the same shape as `m2m:workloads`
+(`sdk/identity/workload-registry`): enroll-side writer identity,
+boot-loaded snapshot, TTL refresh, no database access in the consumer.
+
+```
+Valkey hash   tls:exposure
+  field  = exact hostname, or `*.{zone}`       (most-specific wins)
+  value  = "external"                          (absence ⇒ internal)
+```
+
+**Writers:**
+
+| Writer | Publishes |
 |---|---|
-| Services (in-process `sentin8-tls` verification) | The trust store install (boot) + `SENTIN8_TLS_CA_PEM` fleet env |
-| Operator CLIs, dev boxes, the OIDF rig | acme installs the root into OS + NSS trust stores at boot |
-| Infra plane (PostgreSQL, Valkey) | `make infra-tls` leafs + the shared `{secrets}/acme-ca` chain copy |
-| mTLS workload pairs | The mTLS client CA is the platform intermediate by definition |
+| `vertical enroll` | each service's declared exposure: `{subdomain}.ops.sys.{root}` for the platform plane, plus `{subdomain}.{env_domain}` for every env of every org |
+| app instance create (`POST` install) | the instance's `hostname` and `sentin8_bff_hostname`, taken from the listing's `visibility` - `public` ⇒ external, `env`/`usr` ⇒ internal |
 
-The tier policy therefore splits the platform's hostnames into two
-tiers, and the cost consequence is structural: the public tier's cert
-count is independent of how many services or verticals are enrolled -
-only browser-terminated hostnames occupy it.
+Both writers use an owner ledger (`tls:exposure:owners`), so a re-run
+removes that owner's previous hostnames before publishing the fresh set -
+convergence, not accumulation. Services publish under
+`service:{service_type}`; instances under `app-instance:{id}`, which keeps
+two installs of the same listing from clobbering each other.
 
-| Tier | Hostname classes | Examples | Issuer |
-|---|---|---|---|
-| **A - public** (browser edge) | Browser surfaces whose users are NOT enrolled in the platform root: tenant OP authorize/token surfaces, per-app BFF (`bff.{app_domain}`), hosted tenant UIs, storefront apps | `auth.{env_domain}`, `bff.{app}.ibank.example.com` | Upstream ACME relay (§4.2) |
-| **B - platform** (everything else) | Internal service plane (platform + every vertical backend), mTLS workload pairs, infra plane, AND the platform's own admin plane - `dash.ops.sys.{SENTIN8_DOMAIN}` etc.: its browser population is the OPERATOR, whose trust store acme already plants the root into | `sys.…`, `bus.…`, `bank8-ledger.…`, `m2m-*`, `dash.ops.sys.…` | Platform CA directly (local order, HTTP-01 short-circuit) |
+The app publish is **best-effort**: a Valkey outage must not fail an
+install, and the fallback is the platform CA - the safe default, since an
+undeclared hostname never reaches a public CA.
 
-The tier criterion is the **browser population**, never the surface
-name: "browser" here means "browser-based" only as far as WHO browses.
-A browser whose users cannot be enrolled into the platform root needs a
-publicly-trusted cert; a browser whose users are the operator (whose
-trust store acme already plants the root into) does not. This is why
-`dash.ops.sys.{SENTIN8_DOMAIN}` (the platform's own admin plane,
-operator-browsed) is tier B even though it is browser-based - the
-population that browses it already trusts the platform CA - while a
-TENANT's admin surface (`dash.{env_domain}`, reached by tenant
-admins who never enrolled into the platform root) is tier A. An
-operator who explicitly prefers public trust for a platform-plane
-admin host overrides this by allowlisting the hostname.
+**Reader:** acme boots the map once (`boot_load`, TTL refresh loop) and
+the order path reads the in-memory snapshot - zero I/O per order, zero
+database.
 
-Rules:
+**Why not captain-propagate it as env?** A static env map
+(`SENTIN8_TLS_PLATFORM_LABELS` style) works for platform services, but
+app instances are created at runtime per tenant - captain cannot
+enumerate them at boot. Valkey covers both, and acme already links
+`valkey-glide`.
 
-- **Public-tier names must be publicly resolvable and HTTP-01-provable.**
-  They are external by the classification of §4.1 (never declared local),
-  and they relay upstream exactly as §4.2 specifies. Mixed orders are
-  already rejected, so a public-tier cert never carries platform-tier
-  SANs (and vice versa) - the disjoint trust chains stay disjoint.
-- **Platform-tier names are `SENTIN8_ACME_LOCAL_DOMAINS` zones** (the
-  existing local-order path). RIGMODE-1's `platform` rig mode is the
-  live precedent: a real public DNS zone whose suffix is declared
-  local, so the platform CA signs names that public DNS resolves - the
-  resolver never consults public trust, it consults the OS store the
-  root was installed into.
-- **The default for an undeclared public-style name is "reject"**
-  (invariant 10 unchanged): a name that is neither builtin-local nor
-  operator-declared local is never silently relayed and never silently
-  platform-signed. With proxy mode on, the operator declares tier A
-  explicitly with `SENTIN8_ACME_PUBLIC_HOSTNAMES` (comma-separated
-  entries the relay may order - exact hostnames or a `*.`-prefixed
-  zone wildcard, e.g.
-  `auth.ibank.example.com,bff.www.ibank.example.com`); a public-style
-  name NOT on the list is rejected at new-order with the same 403 as
-  proxy-off. This closes the cost hole where a misconfigured internal
-  name silently burned public-CA orders: no name is ever "relayed by
-  fallthrough", and a new vertical's internal hostnames mint against
-  the platform tier only when the operator declares the zone local.
-- **Per-env wildcard shape**: the minimal-cost tier-A posture for an
-  env is a single wildcard certificate `*.{env_domain}` covering
-  the browser plane (one order, every app hostname under the zone).
-  Wildcards require the DNS-01 challenge (§4.2b), because HTTP-01
-  cannot validate a wildcard identifier. Exact-hostname orders (the
-  tier-A default) cost one upstream order per hostname - comfortably
-  inside public-CA free quotas at the 3-5 hostnames per env the tier
-  boundary implies. The allowlist entry forms compose: an exact
-  hostname entry names one order; a `*.`-prefixed entry names the
-  zone wildcard (one order, many hostnames). Both name what the relay
-  MAY order, never what it must.
-- **PQ posture is per-tier**: tier A is inherently classical (browsers
-  and public CAs today), tier B keeps the active
-  `SENTIN8_TLS_PQ_MODE` family end to end. The per-mode CA directory
-  isolation (PQCA-1) already guarantees a tier-B leaf is minted under
-  the active family; tier-A leafs arrive through the upstream relay
-  and are cached with `source: "upstream"` - the reuse-before-mint
-  source filter (§4.0, RIGMODE-1) keeps the tiers from cross-reusing
-  each other's material, and the browser edge keeps the classical
-  edge it already has (PQCA-2's browser-edge note).
+**Why not a Sys lookup?** Sys answers "who owns this hostname", not "may
+this hostname be public". The exposure decision is a declaration by the
+owner, published once at enroll/app-create; a per-order lookup would add
+a cold-mint network edge for data that is already known.
 
-```mermaid
-flowchart TD
-    subgraph A["Tier A - public (browser edge, UNENROLLED browsers)"]
-        AUTH_H["auth.{env_domain}<br/>(tenant OP authorize/token)"]
-        BFF_H["bff.{app_domain}<br/>(per-app BFF)"]
-        APP_H["tenant hosted UIs / storefronts"]
-    end
-    subgraph B["Tier B - platform CA (everything else)"]
-        SVC["internal service plane<br/>(platform + all vertical backends)"]
-        M2M["mTLS workload pairs (m2m-*)"]
-        INFRA["infra plane (PG, Valkey)"]
-        DASH["platform admin plane (dash.ops.sys) -<br/>operator browser, root already planted"]
-    end
-    AUTH_H -- "external order → upstream relay (§4.2)" --> UP["public CA"]
-    BFF_H -- "external order → upstream relay" --> UP
-    APP_H -- "external order → upstream relay" --> UP
-    SVC -- "local order → Intermediate CA (short-circuit)" --> CA["platform CA"]
-    M2M -- "client-cert / infra mint" --> CA
-    INFRA -- "make infra-tls" --> CA
-    DASH -- "local order → Intermediate CA" --> CA
-```
+**The operator override - `SENTIN8_ACME_FORCE_INTERNAL=true`.** Some
+deployments must never reach a public CA regardless of what is declared:
+air-gapped rigs, offline appliances, and any box whose outbound path to a
+public ACME directory is blocked. The flag makes the platform CA the only
+issuer: every `external` entry is ignored, every order short-circuits to
+the Intermediate CA, and **the upstream client is never constructed** -
+`AppState.upstream` is `None`, so there is no outbound ACME path in the
+process at all. It is checked before the map, so a stale `external` entry
+cannot leak an order outward. This is the deliberate, auditable escape
+hatch - the inverse of fail-open, and the one switch that turns the whole
+exposure mechanism off.
 
-Cost model (why the tier split is the answer to per-tenant external-cert
-sprawl): without tiers, an env with N services and V vertical backends
-requests up to N+V public-CA orders when the domain is public; with the
-tier policy, the public count is fixed by the browser surface (3-5
-hostnames: the OP host, the app BFF host(s), Dash), independent of N
-and V. Tier B is always zero-cost (the platform CA is self-run and
-unmetered).
+| `SENTIN8_ACME_FORCE_INTERNAL` | `..._UPSTREAM_DIRECTORY_URL` | behaviour |
+|---|---|---|
+| `true` **← the default** | any | platform CA only; upstream client not built |
+| `false` / unset | set | `external` entries relay upstream |
+| `false` / unset | empty | external orders **rejected**, never downgraded |
+
+`SENTIN8_ACME_UPSTREAM_CA_PEM` is NOT part of this switch - it is only an
+outbound trust pin for the TLS connection to the upstream. Empty means
+"verify the upstream against the system roots", which is the normal case
+(Let's Encrypt via the OS store).
+
+**Always test against staging.** `SENTIN8_ACME_UPSTREAM_DIRECTORY_URL`
+must point at
+`https://acme-staging-v02.api.letsencrypt.org/directory` for any test
+run: production Let's Encrypt enforces 50 certificates per registered
+domain per week, and a failed conformance battery can consume that budget
+in one pass. `sentin8 captain services` prints this as an `ACME` line
+under `Infrastructure:`, calling out production Let's Encrypt by name so
+a misconfigured rig is visible before a battery runs.
+
+**Unit tests never dial a CA.** The acme test suite asserts on the
+directory URL as a value (`may_order_external`, decision matrix) and
+otherwise points `upstream_directory_url` at a local mock server. Any
+literal appearing in tests is `https://acme.invalid/...`, so a test can
+never reach a real CA even by accident.
+
+**Conformance rig modes (RIGMODE-3).** The rig selects the **issuer**,
+never the domain. `SENTIN8_DOMAIN` comes from the tree `.env` - a
+different domain means a different CA, different enrolled hostnames, and
+different leaves, i.e. a fleet reset rather than an override.
+`start-conformance` refuses to boot when the override file carries
+`SENTIN8_DOMAIN`.
+
+**All-local is the default, everywhere.** `SENTIN8_ACME_FORCE_INTERNAL=true`
+is the shipping `.env.example` value and the value a rig starts with; the
+upstream mode is an explicit, deliberate opt-in for one campaign. That
+ordering is the safety property: an operator who never thinks about the
+issuer gets the platform CA, not a public-CA dependency.
+
+| target | issuer |
+|---|---|
+| `conformance-acme-internal` (DEFAULT) | platform CA for everything; no upstream client is built |
+| `conformance-acme-upstream` | upstream for enrolled `external` names, platform CA otherwise |
 
 ### 4.2 Upstream ACME relay
 
@@ -875,7 +901,7 @@ status `pending`; the caller's finalize re-drives it). Cert download
 failure after `valid` → `502` + order record keeps `certificate` set so
 the next finalize completes it.
 
-### 4.2b Upstream DNS-01 challenge - wildcard tier-A orders (CERTWILD-1)
+### 4.2b Upstream DNS-01 challenge - wildcard orders (CERTWILD-1)
 
 HTTP-01 (§4.3) cannot validate a wildcard identifier - RFC 8555 §8.4
 requires DNS-01 for `*.{env_domain}`, the per-env wildcard that
@@ -930,7 +956,7 @@ sequenceDiagram
     participant U as upstream CA
 
     C->>A: POST /acme/new-order {*.{env_domain}}
-    A->>A: classify external (§4.1) + tier-A allowlist (§4.1a)
+    A->>A: classify via tls:exposure (§4.1)
     A->>A: dns-01 selected by identifier shape
     A->>U: newOrder (JWS/kid)
     U-->>A: authz list carries dns-01 challenge
@@ -1158,9 +1184,10 @@ flowchart TD
    queue is full, acme answers 503 + `Retry-After: 30` (the pinned
    backoff window) rather than accepting work it cannot run in time;
    health/CA/cert reads are never shed; every refusal is warn-logged.
-9. **Classification is offline and deterministic** - `is_local_domain` is a
-   pure function of the identifier + config (builtin forms +
-   `SENTIN8_ACME_LOCAL_DOMAINS` suffixes). Never a DNS lookup.
+9. **Classification is offline and deterministic** - the decision is an
+   in-memory lookup in the boot-loaded `tls:exposure` snapshot (builtin
+   local forms + declared entries). Never a DNS lookup, never a database
+   read, never hostname parsing.
 10. **The platform CA never signs an unproven external domain.** An external
     identifier with proxy mode off is rejected at new-order. With proxy
     mode on, the platform CA still never signs it - the upstream CA
@@ -1196,23 +1223,22 @@ flowchart TD
     never served. The infra mint is active-mode only (leafs are
     singletons); `--ensure-ca` may address every mode (CA stores are
     per-mode scoped).
-16. **Public trust is earned by allowlist, never by fallthrough
-    (CERTTIER-1)** - an external order is relayed upstream only when the
-    identifier is on the `SENTIN8_ACME_PUBLIC_HOSTNAMES` list; every
-    other public-style name is rejected at new-order regardless of
-    proxy mode. The platform CA signs platform-tier names only (local
-    classification), the upstream CA signs tier-A names only, and no
-    mint path exists for a name that is neither. A wildcard order
-    requires a `*.`-prefixed allowlist entry AND routes to DNS-01
-    (§4.2b) - a wildcard identifier can never be validated by HTTP-01,
-    so a wildcard order without DNS-01 configured is rejected, never
-    relayed.
+16. **Public trust is declared, never inferred (TLS-EXPOSURE-1)** - an
+    order relays upstream only when the identifier matches an `external`
+    entry in the `tls:exposure` map (§4.1b); every other name is signed
+    by the platform CA. The map is written by enrollment and app
+    creation, never by a request, so no caller can mint a public
+    certificate for a name it does not own. Absence of an entry always
+    means the platform CA (fail-safe, never fail-open to a public CA).
+    A wildcard order routes to DNS-01 (§4.2b) - a wildcard identifier
+    can never be validated by HTTP-01, so a wildcard order without DNS-01
+    configured is rejected, never relayed.
 
 ## 9. Testing Strategy
 
 | Layer | Coverage | Not covered (by design) |
 |-------|----------|------------------------|
-| Unit/integration (`tests/integration.rs`) | CA generation + reload stability, leaf signing, CA subject naming per PQ mode (CN carries the mode word, intermediate carries `OU=Sentin8:ACME`, root carries no OU - PQCA-3; both chains), load-path DN fidelity (a minted subject survives a later mode flip - leaf issuer DN byte-matches the served intermediate), CA family dispatch (`ensure_ca_family` routes per active mode; PQ leafs are end-entity `ca:false` with the right EKU; wrong-family infra leafs are re-minted - CAMINT-1), local-domain classification (builtin + `SENTIN8_ACME_LOCAL_DOMAINS` suffixes), the tier-A allowlist matcher (exact + `*.` zone-wildcard entries, one-label coverage semantics, case-insensitive, empty-list relays nothing - CERTTIER-1), DNS-01 shape routing (wildcard ⇒ dns-01, the TXT record-name derivation, the fail-closed partial-provider predicate - CERTWILD-1), finalize's authz-valid enforcement, challenge-token serving route, upstream JWS envelope shape + RFC 7638 thumbprint, upstream relay against a mock RFC 8555 server (JWS validation, badNonce replay, cert download + caching; the dns-01 variant drives a mock provider API end to end - TXT publish at newOrder, no http-01 token captured, TXT cleared at forget_token, fail-closed reject without a provider), admin-UI certificate listing + revocation metadata, proxy-mode detection, settings rendering, mint-shed state machine (budget → full → refused → drained; constants pinned) | Live Let's Encrypt flows (external network), live DNS-provider flows (external network), the proxy's :80 listener wiring (proxy repo's tests) |
+| Unit/integration (`tests/integration.rs`) | CA generation + reload stability, leaf signing, CA subject naming per PQ mode (CN carries the mode word, intermediate carries `OU=Sentin8:ACME`, root carries no OU - PQCA-3; both chains), load-path DN fidelity (a minted subject survives a later mode flip - leaf issuer DN byte-matches the served intermediate), CA family dispatch (`ensure_ca_family` routes per active mode; PQ leafs are end-entity `ca:false` with the right EKU; wrong-family infra leafs are re-minted - CAMINT-1), exposure-map classification (builtin local forms; exact hostname vs `*.` zone, most-specific wins; unknown ⇒ internal), DNS-01 shape routing (wildcard ⇒ dns-01, the TXT record-name derivation, the fail-closed partial-provider predicate - CERTWILD-1), finalize's authz-valid enforcement, challenge-token serving route, upstream JWS envelope shape + RFC 7638 thumbprint, upstream relay against a mock RFC 8555 server (JWS validation, badNonce replay, cert download + caching; the dns-01 variant drives a mock provider API end to end - TXT publish at newOrder, no http-01 token captured, TXT cleared at forget_token, fail-closed reject without a provider), admin-UI certificate listing + revocation metadata, proxy-mode detection, settings rendering, mint-shed state machine (budget → full → refused → drained; constants pinned) | Live Let's Encrypt flows (external network), live DNS-provider flows (external network), the proxy's :80 listener wiring (proxy repo's tests) |
 | E2E (`e2e-ts`) | TLS-terminated flows through proxy, RFW admin round-trip | Upstream public-ACME provider (external network) |
 
 Test pyramid: unit (CA hierarchy, domain classification) → integration

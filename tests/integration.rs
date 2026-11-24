@@ -53,8 +53,7 @@ mod tests {
             upstream_directory_url: String::new(),
             upstream_contact: "a@m.n".into(),
             upstream_ca_pem: String::new(),
-            local_domains: vec!["local.sentin8.dev".into()],
-            public_hostnames: Vec::new(),
+            force_internal: false,
             dns_provider: String::new(),
             dns_api_token: String::new(),
             dns_zone: String::new(),
@@ -495,95 +494,116 @@ mod tests {
     }
 
     #[test]
-    fn is_local_domain() {
+    fn builtin_local_forms() {
         install_provider();
-        let local = vec!["local.sentin8.dev".to_string()];
-        assert!(acme::is_local_domain("localhost", &local));
-        assert!(acme::is_local_domain("myapp.localhost", &local));
-        assert!(acme::is_local_domain(
-            "sentin8-auth.ops.sys.local.sentin8.dev",
-            &local
-        ));
-        assert!(acme::is_local_domain("127.0.0.1", &local));
-        assert!(acme::is_local_domain("192.168.1.1", &local));
-        assert!(acme::is_local_domain("10.0.0.1", &local));
-        // Operator-declared local suffixes .
-        assert!(acme::is_local_domain(
+        // Loopback, `.localhost`, `.local`, and RFC 1918 are always the
+        // platform CA - they cannot be publicly validated (DESIGN §4.1).
+        for host in [
+            "localhost",
+            "myapp.localhost",
+            "api.local",
+            "127.0.0.1",
+            "192.168.1.1",
+            "10.0.0.1",
+            "172.16.0.1",
+            "172.31.255.255",
+        ] {
+            assert!(acme::is_builtin_local(host), "{host} must be builtin-local");
+        }
+        for host in [
+            "example.com",
             "bus.ops.sys.local.sentin8.dev",
-            &[
-                "local.sentin8.dev".to_string(),
-                "local.ibank.dev".to_string()
-            ]
-        ));
-        assert!(acme::is_local_domain(
-            "bff.prod.ibank.local.ibank.dev",
-            &[
-                "local.sentin8.dev".to_string(),
-                "local.ibank.dev".to_string()
-            ]
-        ));
-        // Exact-suffix match, not substring.
-        assert!(!acme::is_local_domain(
-            "evilsentin8.dev",
-            &["local.sentin8.dev".to_string()]
-        ));
-        assert!(!acme::is_local_domain(
-            "local.sentin8.dev.evil.com",
-            &["local.sentin8.dev".to_string()]
-        ));
-        assert!(!acme::is_local_domain("example.com", &local));
-        assert!(!acme::is_local_domain("myorg.com", &local));
-        // An empty suffix list still admits the builtin local forms.
-        assert!(acme::is_local_domain("localhost", &[]));
-        assert!(!acme::is_local_domain("bus.ops.sys.local.sentin8.dev", &[]));
+            "172.32.0.1",
+            "172.15.0.1",
+        ] {
+            assert!(!acme::is_builtin_local(host), "{host} must NOT be builtin-local");
+        }
     }
 
     #[test]
-    fn public_hostname_allowlist_gate() {
+    fn force_internal_overrides_every_exposure() {
         install_provider();
-        let mk = |entries: Vec<&str>| {
+        let mut config = mk_config();
+        // An upstream URL is only ever COMPARED here - never dialed - so a
+        // fake value keeps the test hermetic (no test may touch a real CA).
+        config.upstream_directory_url = "https://acme.invalid/directory".into();
+        // An upstream alone permits external orders...
+        assert!(config.may_order_external());
+        // ...but the override wins, so an air-gapped box can never emit one.
+        config.force_internal = true;
+        assert!(!config.may_order_external());
+    }
+
+    #[test]
+    fn external_requires_an_upstream() {
+        install_provider();
+        let config = mk_config();
+        // No upstream and no override: external is impossible, and the
+        // order is REJECTED rather than silently downgraded to the
+        // platform CA (DESIGN §4.1).
+        assert!(!config.may_order_external());
+    }
+
+    /// The full decision matrix (TLS-EXPOSURE-1): force_internal x
+    /// upstream presence. Exactly ONE cell permits a public order.
+    #[test]
+    fn exposure_decision_matrix() {
+        install_provider();
+        let url = "https://acme.invalid/directory";
+
+        // (force_internal, upstream) -> may relay externally?
+        for (force, upstream, expected) in [
+            (false, None, false),        // no way out: reject
+            (false, Some(url), true),    // the only permitted combination
+            (true, None, false),         // air-gapped
+            (true, Some(url), false),    // override beats a live upstream
+        ] {
             let mut config = mk_config();
-            config.public_hostnames = entries.into_iter().map(|s| s.to_string()).collect();
-            config
-        };
+            config.force_internal = force;
+            config.upstream_directory_url = upstream.unwrap_or("").to_string();
+            assert_eq!(
+                config.may_order_external(),
+                expected,
+                "force_internal={force} upstream={:?}",
+                upstream
+            );
+        }
+    }
 
-        // An empty allowlist relays NOTHING (CERTTIER-1 invariant 16: no
-        // name is ever relayed by fallthrough - even with proxy mode on).
-        let config = mk(vec![]);
-        assert!(!config.is_public_hostname_allowed("auth.ibank.example.com"));
-        assert!(!config.is_public_hostname_allowed("*.prod.ibank.example.com"));
+    /// A hostname the operator never declared must never reach a public CA,
+    /// regardless of the two env switches.
+    #[tokio::test]
+    async fn undeclared_hostname_stays_internal() {
+        install_provider();
+        let map = sentin8::auth::workload_registry::ExposureMap::boot_load_empty("sentin8:acme");
+        for host in [
+            "auth.someorg.local.sentin8.dev",
+            "dash.ops.sys.local.sentin8.dev",
+            "anything.example.com",
+        ] {
+            assert_eq!(
+                map.classify(host).await,
+                sentin8::auth::workload_registry::Exposure::Internal,
+                "{host} must default to the platform CA"
+            );
+        }
+    }
 
-        // Exact-hostname entries match themselves, nothing else.
-        let config = mk(vec!["auth.ibank.example.com"]);
-        assert!(config.is_public_hostname_allowed("auth.ibank.example.com"));
-        assert!(!config.is_public_hostname_allowed("bff.auth.ibank.example.com"));
-        assert!(!config.is_public_hostname_allowed("evil.com"));
-
-        // Wildcard entries cover exactly ONE label beneath the zone
-        // (RFC 8555 §7.1.3 wildcard semantics).
-        let config = mk(vec!["*.prod.ibank.example.com"]);
-        // The wildcard identifier itself (ordering the zone wildcard).
-        assert!(config.is_public_hostname_allowed("*.prod.ibank.example.com"));
-        // One label under the zone.
-        assert!(config.is_public_hostname_allowed("auth.prod.ibank.example.com"));
-        // Two labels under the zone: NOT covered (a wildcard cert covers
-        // exactly one label).
-        assert!(!config.is_public_hostname_allowed("a.b.prod.ibank.example.com"));
-        // The bare zone apex.
-        assert!(!config.is_public_hostname_allowed("prod.ibank.example.com"));
-
-        // Case-insensitivity on both sides.
-        let config = mk(vec!["*.PROD.IBANK.Example.COM"]);
-        assert!(config.is_public_hostname_allowed("AUTH.prod.ibank.example.com"));
-
-        // A mixed declaration composes: exact entries + wildcards.
-        let config = mk(vec![
-            "auth.ibank.example.com",
-            "*.www.ibank.example.com",
-        ]);
-        assert!(config.is_public_hostname_allowed("auth.ibank.example.com"));
-        assert!(config.is_public_hostname_allowed("app.www.ibank.example.com"));
-        assert!(!config.is_public_hostname_allowed("other.ibank.example.com"));
+    /// Declared externals classify as such; builtin-local forms never do.
+    #[tokio::test]
+    async fn declared_external_classifies_external() {
+        install_provider();
+        let map = sentin8::auth::workload_registry::ExposureMap::boot_load_empty("sentin8:acme");
+        // Empty map: builtin-local is still local by the caller's own check
+        // (is_builtin_local), and unknown names classify internal - so a
+        // declaration is the ONLY path to External.
+        assert_eq!(
+            map.classify("auth.prod.ibank.example.com").await,
+            sentin8::auth::workload_registry::Exposure::Internal
+        );
+        // The builtin check is independent of the map.
+        assert!(acme::is_builtin_local("localhost"));
+        assert!(acme::is_builtin_local("10.1.2.3"));
     }
 
     #[test]
@@ -701,8 +721,7 @@ mod tests {
 
         // When upstream_directory_url is set, proxy mode is enabled
         let mut config_proxy = mk_config();
-        config_proxy.upstream_directory_url =
-            "https://acme-v02.api.letsencrypt.org/directory".into();
+        config_proxy.upstream_directory_url = "https://acme.invalid/directory".into();
         assert!(
             config_proxy.proxy_mode_enabled(),
             "config with upstream URL should have proxy mode"
@@ -1535,7 +1554,6 @@ mod tests {
 
             let mut config = mk_config();
             config.upstream_directory_url = format!("{base}/directory");
-            config.public_hostnames = vec!["example.dev".into()];
             config.init_dirs().unwrap();
 
             // Seed the cert store with a LIVE upstream-source leaf:

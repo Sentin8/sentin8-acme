@@ -36,22 +36,15 @@ pub struct AcmeConfig {
     /// Optional PEM file pinning the upstream CA chain (external domains).
     /// Empty = verify the upstream against the system roots.
     pub upstream_ca_pem: String,
-    /// Operator-declared local-domain suffixes - a domain equal
-    /// to or ending with `.{suffix}` classifies LOCAL (platform CA signs
-    /// it, HTTP-01 short-circuits). From `SENTIN8_ACME_LOCAL_DOMAINS`
-    /// (comma-separated). Dev wildcard zones (`local.sentin8.dev` →
-    /// 127.0.0.1) belong here - public CAs refuse loopback-resolving names,
-    /// so the upstream path can never succeed for them.
-    pub local_domains: Vec<String>,
-    /// Operator-declared tier-A allowlist (CERTTIER-1, DESIGN §4.1a) -
-    /// the ONLY external identifiers the upstream relay may order.
-    /// Entries are exact hostnames (`auth.ibank.example.com`) or
-    /// `*.`-prefixed zone wildcards (`*.prod.ibank.example.com`). An
-    /// external name NOT on the list is rejected at new-order with the
-    /// same 403 as proxy-off, regardless of proxy mode - no name is ever
-    /// relayed by fallthrough (invariant 16). From
-    /// `SENTIN8_ACME_PUBLIC_HOSTNAMES` (comma-separated).
-    pub public_hostnames: Vec<String>,
+    /// Force the platform CA as the ONLY issuer (DESIGN §4.1b).
+    ///
+    /// When true, every `external` entry in the exposure map is ignored:
+    /// all orders short-circuit to the Intermediate CA and the upstream
+    /// client is never consulted. The deliberate escape hatch for
+    /// air-gapped rigs, offline appliances, and deployments with no
+    /// outbound path to a public ACME directory. From
+    /// `SENTIN8_ACME_FORCE_INTERNAL`.
+    pub force_internal: bool,
     /// DNS provider for DNS-01 wildcard challenges (CERTWILD-1, DESIGN
     /// §4.2b). Empty = no provider - a wildcard order is rejected
     /// fail-closed at new-order. From `SENTIN8_ACME_DNS_PROVIDER`
@@ -135,18 +128,9 @@ impl AcmeConfig {
             upstream_contact: env::var("SENTIN8_ACME_UPSTREAM_CONTACT")
                 .unwrap_or_else(|_| "a@m.n".into()),
             upstream_ca_pem: env::var("SENTIN8_ACME_UPSTREAM_CA_PEM").unwrap_or_default(),
-            local_domains: env::var("SENTIN8_ACME_LOCAL_DOMAINS")
-                .unwrap_or_default()
-                .split(',')
-                .map(|s| s.trim().to_ascii_lowercase())
-                .filter(|s| !s.is_empty())
-                .collect(),
-            public_hostnames: env::var("SENTIN8_ACME_PUBLIC_HOSTNAMES")
-                .unwrap_or_default()
-                .split(',')
-                .map(|s| s.trim().to_ascii_lowercase())
-                .filter(|s| !s.is_empty())
-                .collect(),
+            force_internal: env::var("SENTIN8_ACME_FORCE_INTERNAL")
+                .map(|v| v.trim().eq_ignore_ascii_case("true") || v.trim() == "1")
+                .unwrap_or(false),
             dns_provider: env::var("SENTIN8_ACME_DNS_PROVIDER")
                 .unwrap_or_default()
                 .trim()
@@ -267,33 +251,17 @@ impl AcmeConfig {
         !self.upstream_directory_url.is_empty()
     }
 
-    /// Whether the identifier is on the tier-A allowlist (CERTTIER-1,
-    /// DESIGN §4.1a) - an exact-hostname entry matches itself, a
-    /// `*.{zone}` entry matches every single label under the zone
-    /// (RFC 8555 §7.1.3 wildcard semantics: exactly one label).
-    /// A plain-hostname identifier also matches a wildcard entry
-    /// (the covered name orders the wildcard's exact form); a
-    /// `*.{zone}` identifier matches the wildcard entry itself.
-    pub fn is_public_hostname_allowed(&self, identifier: &str) -> bool {
-        let id = identifier.to_ascii_lowercase();
-        self.public_hostnames.iter().any(|entry| {
-            let entry = entry.to_ascii_lowercase();
-            if let Some(entry_zone) = entry.strip_prefix("*.") {
-                // Wildcard entry: the wildcard identifier itself, or a
-                // covered name with exactly ONE label beneath the zone -
-                // `a.{zone}` matches, `a.b.{zone}` does not, `{zone}`
-                // does not (RFC 8555 §7.1.3 wildcard semantics).
-                if id == entry {
-                    return true;
-                }
-                match id.split_once('.') {
-                    Some((label, rest)) => !label.is_empty() && rest == entry_zone,
-                    None => false,
-                }
-            } else {
-                entry == id
-            }
-        })
+    /// Whether an identifier may be served by a public CA (DESIGN §4.1).
+    ///
+    /// `SENTIN8_ACME_FORCE_INTERNAL=true` wins over everything: the
+    /// platform CA is the only issuer, so no order can leave the box even
+    /// if the exposure map carries a stale `external` entry. Otherwise an
+    /// external hostname requires an upstream directory to relay to - a
+    /// missing upstream is a rejection, never a silent downgrade to the
+    /// platform CA (the name is publicly resolvable and the platform root
+    /// is not in the public trust store).
+    pub fn may_order_external(&self) -> bool {
+        !self.force_internal && !self.upstream_directory_url.is_empty()
     }
 
     /// Whether DNS-01 is required for the identifier shape (CERTWILD-1,

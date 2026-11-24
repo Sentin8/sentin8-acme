@@ -279,60 +279,53 @@ pub async fn new_order(
     }
 
     // ── Domain classification (DESIGN §4.1) ──
-    // Classify the order as local or external. Mixed orders are rejected
-    // (disjoint trust chains - a cert must not mix platform-CA and
-    // upstream-signed names).
-    let all_local = req
-        .identifiers
+    // The exposure map decides: a hostname declared `external` relays to
+    // the upstream CA, everything else is signed by the platform CA.
+    // `SENTIN8_ACME_FORCE_INTERNAL` overrides the whole map, so an
+    // air-gapped box can never emit a public order no matter what is
+    // published. The decision is a per-order value stored on the record;
+    // finalize re-derives it (defense in depth).
+    let mut kinds = Vec::with_capacity(req.identifiers.len());
+    for ident in &req.identifiers {
+        let exposure = if state.config.force_internal {
+            sentin8::auth::workload_registry::Exposure::Internal
+        } else if is_builtin_local(&ident.value) {
+            sentin8::auth::workload_registry::Exposure::Internal
+        } else {
+            state.exposure.classify(&ident.value).await
+        };
+        kinds.push(exposure);
+    }
+    let all_local = kinds
         .iter()
-        .all(|i| is_local_domain(&i.value, &state.config.local_domains));
-    let all_external = req
-        .identifiers
+        .all(|k| *k == sentin8::auth::workload_registry::Exposure::Internal);
+    let all_external = kinds
         .iter()
-        .all(|i| !is_local_domain(&i.value, &state.config.local_domains));
+        .all(|k| *k == sentin8::auth::workload_registry::Exposure::External);
     if !all_local && !all_external {
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({
                 "type": "urn:ietf:params:acme:error:malformed",
-                "detail": "mixed local and external identifiers in a single order are not supported"
+                "detail": "mixed internal and external identifiers in a single order are not supported"
             })),
         )
             .into_response();
     }
 
     // ── External domain relay ──
-    // With proxy mode on, external orders are relayed to the upstream CA
-    // (DESIGN §4.2). With proxy mode off, an external identifier is
-    // REJECTED - there is no local proof of control for a public name, so
-    // signing it would mint a trusted identity from an untrusted request.
+    // An external order needs an upstream CA. Without one it is REJECTED,
+    // never silently downgraded to the platform CA (the name is publicly
+    // resolvable and the platform root is not publicly trusted).
     if all_external {
-        // Tier-A allowlist (CERTTIER-1, DESIGN §4.1a): even with proxy
-        // mode on, only operator-declared names relay - no name is ever
-        // relayed by fallthrough (invariant 16).
-        let allowed = req.identifiers.iter().all(|i| {
-            state
-                .config
-                .is_public_hostname_allowed(&i.value)
-        });
-        if !allowed {
-            return (
-                StatusCode::FORBIDDEN,
-                Json(serde_json::json!({
-                    "type": "urn:ietf:params:acme:error:rejectedIdentifier",
-                    "detail": "external domain is not on the tier-A allowlist (SENTIN8_ACME_PUBLIC_HOSTNAMES) - no name is relayed by fallthrough",
-                })),
-            )
-                .into_response();
-        }
-        if state.config.proxy_mode_enabled() {
+        if state.config.may_order_external() {
             return relay_new_order(&state, &req).await;
         }
         return (
             StatusCode::FORBIDDEN,
             Json(serde_json::json!({
                 "type": "urn:ietf:params:acme:error:rejectedIdentifier",
-                "detail": "external domain orders require an upstream ACME provider (SENTIN8_ACME_UPSTREAM_DIRECTORY_URL not configured)",
+                "detail": "external hostname requires an upstream ACME provider (SENTIN8_ACME_UPSTREAM_DIRECTORY_URL) and SENTIN8_ACME_FORCE_INTERNAL unset",
             })),
         )
             .into_response();
@@ -517,14 +510,20 @@ pub async fn challenge_ready(
                         // local orders short-circuit; external orders carry
                         // the upstream's token in the bounded map and are
                         // notified upstream.
-                        if is_local_domain(&authz.identifier.value, &state.config.local_domains)
-                            && state
-                                .upstream
-                                .challenge_tokens
-                                .read()
-                                .await
-                                .get(&ch.token)
-                                .is_none()
+                        if (state.config.force_internal
+                            || is_builtin_local(&authz.identifier.value)
+                            || state.exposure.classify(&authz.identifier.value).await
+                                == sentin8::auth::workload_registry::Exposure::Internal)
+                            && match state.upstream.as_ref() {
+                                // No upstream at all: nothing can be pending.
+                                None => true,
+                                Some(u) => u
+                                    .challenge_tokens
+                                    .read()
+                                    .await
+                                    .get(&ch.token)
+                                    .is_none(),
+                            }
                         {
                             ch.status = "valid".into();
                             authz.status = "valid".into();
@@ -563,7 +562,14 @@ pub async fn challenge_ready(
                                 }))
                                 .into_response();
                             };
-                            match state.upstream.notify_challenge(&upstream_url).await {
+                            let Some(upstream) = state.upstream.as_ref() else {
+                                return Json(serde_json::json!({
+                                    "status": "invalid",
+                                    "error": "no upstream relay configured",
+                                }))
+                                .into_response();
+                            };
+                            match upstream.notify_challenge(&upstream_url).await {
                                 Ok(()) => {
                                     ch.status = "valid".into();
                                     authz.status = "valid".into();
@@ -707,16 +713,25 @@ pub async fn finalize_order(
             .into_response();
     }
 
-    // Re-derive the local classification (stored decision re-checked at
-    // finalize - DESIGN §4.1).
-    if !order
-        .identifiers
-        .iter()
-        .all(|i| is_local_domain(&i.value, &state.config.local_domains))
-    {
+    // Re-derive the classification (stored decision re-checked at
+    // finalize - DESIGN §4.1). Finalize only ever signs internal orders;
+    // external ones are fulfilled by the upstream and reach us already
+    // signed.
+    let mut all_internal = true;
+    for ident in &order.identifiers {
+        let internal = state.config.force_internal
+            || is_builtin_local(&ident.value)
+            || state.exposure.classify(&ident.value).await
+                == sentin8::auth::workload_registry::Exposure::Internal;
+        if !internal {
+            all_internal = false;
+            break;
+        }
+    }
+    if !all_internal {
         return (
             StatusCode::FORBIDDEN,
-            "order is not local - external domains require the upstream relay",
+            "order is not internal - external hostnames are signed by the upstream relay",
         )
             .into_response();
     }
@@ -1295,31 +1310,20 @@ pub async fn issue_client_cert(
 
 // ── Helpers ────────────────────────────────────────────────────────────
 
-/// Whether a domain classifies LOCAL (acme DESIGN.md §4.1) - a
-/// pure, offline function of the identifier + config (never DNS):
-/// builtin local forms (localhost, `.localhost`, `.local`, private/
-/// loopback IP literals) plus every operator-declared suffix in
-/// `SENTIN8_ACME_LOCAL_DOMAINS`. Local domains are signed directly by
-/// the platform CA with HTTP-01 short-circuited; others are external
-/// (upstream relay or rejected - the platform CA never signs an
-/// unproven public name).
-pub fn is_local_domain(domain: &str, local_domains: &[String]) -> bool {
+/// Whether a hostname is a built-in internal form (acme DESIGN §4.1).
+///
+/// Loopback, `.localhost`, `.local`, and RFC 1918 literals are always
+/// signed by the platform CA - they cannot be publicly validated, so no
+/// exposure declaration is consulted for them.
+pub fn is_builtin_local(domain: &str) -> bool {
     let d = domain.to_ascii_lowercase();
-    if d == "localhost"
+    d == "localhost"
         || d.ends_with(".localhost")
         || d.ends_with(".local")
         || d.starts_with("127.")
         || d.starts_with("192.168.")
         || d.starts_with("10.")
         || (16..=31).any(|o| d.starts_with(&format!("172.{o}.")))
-    {
-        return true;
-    }
-    // Careful: a suffix match must be exact - "local.sentin8.dev" matches
-    // "x.local.sentin8.dev" and itself, but "evilsentin8.dev" must NOT.
-    local_domains
-        .iter()
-        .any(|s| d == *s || d.ends_with(&format!(".{s}")))
 }
 
 fn generate_nonce() -> String {
@@ -1553,7 +1557,7 @@ async fn relay_new_order(state: &Arc<AppState>, req: &NewOrderRequest) -> Respon
             .into_response();
     }
     let (upstream_order, token, challenge_url, challenge_type) =
-        match state.upstream.new_order(&domain).await {
+        match state.upstream.as_ref().expect("upstream relay gated at new-order").new_order(&domain).await {
             Ok(t) => t,
             Err(crate::upstream::UpstreamError::Rejected(detail)) => {
                 return (StatusCode::BAD_REQUEST, detail).into_response()
@@ -1712,7 +1716,7 @@ async fn relay_finalize_order(
     // (found live, CERTTIER-1 public-mode run 2026-11-20). Only the
     // SUCCESS path (or a terminal invalid, detected by the poll loop's
     // own "invalid" branch) clears the proof.
-    let (upstream_order, csr_key_pem) = match state.upstream.finalize(&relay.order, &domain).await {
+    let (upstream_order, csr_key_pem) = match state.upstream.as_ref().expect("upstream relay gated at new-order").finalize(&relay.order, &domain).await {
         Ok(t) => t,
         Err(crate::upstream::UpstreamError::Rejected(detail)) => {
             return (StatusCode::BAD_REQUEST, detail).into_response();
@@ -1723,7 +1727,7 @@ async fn relay_finalize_order(
     };
 
     // Poll until the upstream validates the http-01 challenge and signs.
-    let upstream_order = match state.upstream.poll_order(&upstream_order).await {
+    let upstream_order = match state.upstream.as_ref().expect("upstream relay gated at new-order").poll_order(&upstream_order).await {
         Ok(o) => o,
         Err(crate::upstream::UpstreamError::Rejected(detail)) => {
             return (StatusCode::BAD_REQUEST, detail).into_response();
@@ -1739,7 +1743,7 @@ async fn relay_finalize_order(
         )
             .into_response();
     };
-    let cert_pem = match state.upstream.download_cert(&cert_url).await {
+    let cert_pem = match state.upstream.as_ref().expect("upstream relay gated at new-order").download_cert(&cert_url).await {
         Ok(p) => p,
         Err(e) => {
             // Order record keeps `certificate` set - a later finalize
@@ -1747,7 +1751,9 @@ async fn relay_finalize_order(
             return (StatusCode::BAD_GATEWAY, e.to_string()).into_response();
         }
     };
-    state.upstream.forget_token(&relay.token).await;
+    if let Some(upstream) = state.upstream.as_ref() {
+        upstream.forget_token(&relay.token).await;
+    }
 
     // Cache the chain + the CSR's key (upstream certs carry no local key -
     // the CSR key IS the certificate's private key and belongs with it).
@@ -1822,7 +1828,10 @@ pub async fn serve_challenge_token(
     State(state): State<Arc<AppState>>,
     AxumPath(token): AxumPath<String>,
 ) -> Response {
-    match state.upstream.challenge_tokens.read().await.get(&token) {
+    let Some(upstream) = state.upstream.as_ref() else {
+        return (StatusCode::NOT_FOUND, "no such challenge").into_response();
+    };
+    match upstream.challenge_tokens.read().await.get(&token) {
         Some((_, key_auth)) => (
             StatusCode::OK,
             [("Content-Type", "text/plain".to_string())],

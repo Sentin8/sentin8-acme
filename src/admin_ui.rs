@@ -193,7 +193,7 @@ pub async fn get_admin_data(
             "upstream_directory_url": if state.config.upstream_directory_url.is_empty() { "" } else { &state.config.upstream_directory_url },
             "leaf_cert_days": state.config.leaf_cert_days,
             "install_trust_store": state.config.install_trust_store,
-            "local_domains": state.config.local_domains,
+            "force_internal": state.config.force_internal,
         })],
         _ => vec![],
     };
