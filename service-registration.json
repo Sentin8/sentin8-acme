@@ -8,7 +8,8 @@
       "telemetry_property": {
         "slug": "acme",
         "name": "Sentin8:Acme Platform Telemetry"
-      }
+      },
+      "exposure": "internal"
     }
   ]
 }
