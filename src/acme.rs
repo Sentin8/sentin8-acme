@@ -813,6 +813,8 @@ pub async fn finalize_order(
         "serial": cert_id,
         "revoked": false,
         "source": "local",
+        // CERTENV-1: the provenance stamp the reuse scan keys on.
+        "issuer": issuer_stamp(&state.config, "local"),
     });
     std::fs::write(state.config.cert_meta_path(&cert_id), meta.to_string()).ok();
 
@@ -1340,6 +1342,43 @@ fn now_ts() -> u64 {
         .unwrap_or(0)
 }
 
+/// The provenance stamp a certificate carries in `metadata.json`
+/// (CERTENV-1): `local` for a platform-CA leaf, `upstream:{env}` for one a
+/// public CA issued, where `{env}` is [`AcmeConfig::issuer_env`]
+/// (`staging`/`production`/`custom-{host}`).
+///
+/// `source` alone was a binary (`local`/`upstream`) with no record of
+/// WHICH directory issued a leaf, so a staging leaf satisfied a production
+/// order and vice versa - the reuse scan returned a certificate the
+/// active issuer never minted.
+fn issuer_stamp(config: &crate::config::AcmeConfig, source: &str) -> String {
+    if source == "upstream" {
+        format!("upstream:{}", config.issuer_env())
+    } else {
+        source.to_string()
+    }
+}
+
+/// The provenance stamp of an EXISTING metadata record, backfilling the
+/// legacy shape (CERTENV-1).
+///
+/// Records written before `issuer` existed carry only `source`. Every
+/// `source:"upstream"` leaf in a legacy store was minted by whichever
+/// directory the process was configured against at the time - and the only
+/// upstream that ever ran before this field existed was Let's Encrypt
+/// production (its account kid is the persisted `acme-v02` one). So an
+/// upstream leaf without `issuer` backfills to `upstream:production`
+/// rather than being silently treated as matching any directory.
+fn metadata_issuer_stamp(meta: &serde_json::Value) -> String {
+    if let Some(stamp) = meta.get("issuer").and_then(|i| i.as_str()) {
+        return stamp.to_string();
+    }
+    match meta.get("source").and_then(|s| s.as_str()).unwrap_or("local") {
+        "upstream" => "upstream:production".to_string(),
+        other => other.to_string(),
+    }
+}
+
 /// Reuse-before-mint lookup (DESIGN §4.0): find the newest
 /// non-revoked, unexpired certificate in the store whose `domain`
 /// matches exactly and whose `pq_mode` matches the ACTIVE transport
@@ -1355,13 +1394,22 @@ fn now_ts() -> u64 {
 /// a foreign-family leaf - the filter rejects it and forces a fresh
 /// mint. Records WITHOUT a `pq_mode` (legacy stores) are treated as
 /// `classical` - the only posture that predated the field.
-fn find_reusable_cert(
+///
+/// CERTENV-1: the stamp filter extends the same defense one level
+/// deeper - an `upstream:staging` leaf never satisfies a
+/// `upstream:production` order, so a directory switch behaves exactly
+/// like a posture switch.
+///
+/// Public so the isolation rule is directly testable (the decision is a
+/// pure store scan; the caller's order path is a thin wrapper over it).
+pub fn find_reusable_cert(
     config: &crate::config::AcmeConfig,
     domain: &str,
     required_source: &str,
 ) -> Option<(String, String)> {
     let now = now_ts();
     let active_mode = sentin8::config::pq_mode();
+    let required_stamp = issuer_stamp(config, required_source);
     let dir = config.certs_dir();
     let mut best: Option<(u64, String)> = None;
     for entry in std::fs::read_dir(&dir).ok()?.flatten() {
@@ -1382,14 +1430,15 @@ fn find_reusable_cert(
         if cert_mode != active_mode {
             continue; // minted for a different transport posture - never reused
         }
-        // Issuer-checked reuse (RIGMODE-1): a cert only ends an order of
-        // its OWN source. After a platform->public mode flip the domain
-        // already carries a live PLATFORM-CA leaf; a cross-source hit
-        // would silently return it and the "LE-issued" expectation would
-        // die exactly where the fleet state was mixed - the external
-        // order must reach the upstream for a LE-signed one.
-        let cert_source = meta.get("source").and_then(|s| s.as_str()).unwrap_or("local");
-        if cert_source != required_source {
+        // Issuer-checked reuse (RIGMODE-1 + CERTENV-1): a cert only ends an
+        // order of its OWN source AND its own directory. After a
+        // platform->public mode flip the domain already carries a live
+        // PLATFORM-CA leaf; a cross-source hit would silently return it and
+        // the "LE-issued" expectation would die exactly where the fleet
+        // state was mixed. The same argument applies one level down: after
+        // a staging->production switch a live staging leaf must not answer
+        // a production order (its chain is not publicly trusted).
+        if metadata_issuer_stamp(&meta) != required_stamp {
             continue;
         }
         if meta.get("revoked").and_then(|r| r.as_bool()).unwrap_or(false) {
@@ -1556,11 +1605,73 @@ async fn relay_new_order(state: &Arc<AppState>, req: &NewOrderRequest) -> Respon
         )
             .into_response();
     }
+
+    // Outbound issuance budget (CERTBUDGET-1, DESIGN §4.2c). Placed AFTER
+    // the reuse lookup: a cached leaf ends the order without touching the
+    // upstream, so it must never consume budget. Everything below this
+    // point is a real public-CA order, and the budget is what stops a
+    // retry storm from draining Let's Encrypt's 50/registered-domain/week
+    // allowance - a limit the exposure map says nothing about.
+    if let Err(refusal) = crate::budget::admit(
+        &state.config.valkey_url,
+        "sentin8:acme",
+        &domain,
+        state.config.budget,
+    )
+    .await
+    {
+        tracing::warn!(
+            domain = %domain,
+            window = refusal.window.as_str(),
+            retry_after = refusal.retry_after,
+            "acme: upstream order refused by the issuance budget"
+        );
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            [(
+                axum::http::header::RETRY_AFTER,
+                refusal.retry_after.to_string(),
+            )],
+            Json(serde_json::json!({
+                "type": "urn:ietf:params:acme:error:rateLimited",
+                "detail": format!(
+                    "upstream issuance budget exhausted for this {} window - retry after {}s (CERTBUDGET-1)",
+                    refusal.window.as_str(),
+                    refusal.retry_after
+                ),
+            })),
+        )
+            .into_response();
+    }
+
     let (upstream_order, token, challenge_url, challenge_type) =
         match state.upstream.as_ref().expect("upstream relay gated at new-order").new_order(&domain).await {
             Ok(t) => t,
             Err(crate::upstream::UpstreamError::Rejected(detail)) => {
-                return (StatusCode::BAD_REQUEST, detail).into_response()
+                // The CA's own answer outranks the local arithmetic: park
+                // ALL upstream ordering so the window cannot be probed
+                // again while it is closed (CERTBUDGET-1).
+                if crate::budget::is_rate_limited(&detail) {
+                    crate::budget::note_rate_limited(
+                        &state.config.valkey_url,
+                        "sentin8:acme",
+                        crate::budget::RATE_LIMIT_COOLDOWN_S,
+                    )
+                    .await;
+                    return (
+                        StatusCode::TOO_MANY_REQUESTS,
+                        [(
+                            axum::http::header::RETRY_AFTER,
+                            crate::budget::RATE_LIMIT_COOLDOWN_S.to_string(),
+                        )],
+                        Json(serde_json::json!({
+                            "type": "urn:ietf:params:acme:error:rateLimited",
+                            "detail": "upstream CA rate-limited this account/domain - ordering parked",
+                        })),
+                    )
+                        .into_response();
+                }
+                return (StatusCode::BAD_REQUEST, detail).into_response();
             }
             Err(crate::upstream::UpstreamError::Unreachable(detail)) => {
                 return (StatusCode::BAD_GATEWAY, detail).into_response()
@@ -1770,10 +1881,20 @@ async fn relay_finalize_order(
         "domain": domain,
         "pq_mode": sentin8::config::pq_mode(),
         "issued_at": now_ts(),
-        "expires_at": now_ts() + state.config.leaf_cert_days * 86400,
+        // CERTENV-1: an upstream leaf's REAL validity, not the local
+        // `leaf_cert_days` window. Public CAs are shortening lifetimes; a
+        // synthetic expiry would keep an already-dead leaf in the reuse
+        // scan past its notAfter, so the fleet would serve it instead of
+        // ordering a fresh one.
+        "expires_at": crate::ca::pem_not_after(&cert_pem)
+            .map(|dt| dt.timestamp().max(0) as u64)
+            .unwrap_or_else(|| now_ts() + state.config.leaf_cert_days * 86400),
         "serial": cert_id,
         "revoked": false,
         "source": "upstream",
+        // CERTENV-1: which directory issued it (`upstream:staging` /
+        // `upstream:production` / `upstream:custom-{host}`).
+        "issuer": issuer_stamp(&state.config, "upstream"),
     });
     std::fs::write(state.config.cert_meta_path(&cert_id), meta.to_string()).ok();
 

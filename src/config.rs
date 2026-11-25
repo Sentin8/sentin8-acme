@@ -10,6 +10,20 @@
 use std::env;
 use std::path::PathBuf;
 
+/// Parse a `u64` from the environment, falling back to `default` when the
+/// variable is absent, empty, or not a number.
+///
+/// The budget knobs (CERTBUDGET-1) are deliberately tolerant: a typo must
+/// not brick cert issuance, and the default is always the SAFE (tighter)
+/// value, so a malformed override never widens the valve.
+fn env_u64(name: &str, default: u64) -> u64 {
+    env::var(name)
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(default)
+}
+
 /// Acme runtime configuration, sourced from environment variables set by
 /// captain (`SENTIN8_ACME_*`).
 #[derive(Debug, Clone)]
@@ -45,6 +59,10 @@ pub struct AcmeConfig {
     /// outbound path to a public ACME directory. From
     /// `SENTIN8_ACME_FORCE_INTERNAL`.
     pub force_internal: bool,
+    /// The outbound issuance budget (CERTBUDGET-1, DESIGN §4.2c) - the
+    /// valve that keeps a retry storm from draining a public CA's
+    /// per-registered-domain allowance.
+    pub budget: crate::budget::Budget,
     /// DNS provider for DNS-01 wildcard challenges (CERTWILD-1, DESIGN
     /// §4.2b). Empty = no provider - a wildcard order is rejected
     /// fail-closed at new-order. From `SENTIN8_ACME_DNS_PROVIDER`
@@ -84,8 +102,7 @@ pub struct AcmeConfig {
 
 impl AcmeConfig {
     /// Load configuration from environment variables.
-    pub fn from_env() -> Self {
-        let sentin8_domain = env::var("SENTIN8_DOMAIN").unwrap_or_else(|_| "local.sentin8.dev".into());
+    pub fn from_env() -> Self {        let sentin8_domain = env::var("SENTIN8_DOMAIN").unwrap_or_else(|_| "local.sentin8.dev".into());
         // FHS: /var/lib/sentin8/tls (prod), or SENTIN8_ACME_DATA_DIR override, or
         // $HOME/.sentin8/acme (dev fallback for backward compat).
         //
@@ -131,6 +148,11 @@ impl AcmeConfig {
             force_internal: env::var("SENTIN8_ACME_FORCE_INTERNAL")
                 .map(|v| v.trim().eq_ignore_ascii_case("true") || v.trim() == "1")
                 .unwrap_or(false),
+            budget: crate::budget::Budget {
+                per_host_per_day: env_u64("SENTIN8_ACME_BUDGET_PER_HOST_PER_DAY", 3),
+                per_hour: env_u64("SENTIN8_ACME_BUDGET_PER_HOUR", 30),
+                per_week: env_u64("SENTIN8_ACME_BUDGET_PER_WEEK", 40),
+            },
             dns_provider: env::var("SENTIN8_ACME_DNS_PROVIDER")
                 .unwrap_or_default()
                 .trim()
@@ -242,8 +264,30 @@ impl AcmeConfig {
     }
 
     /// Path to the upstream ACME account file (for external domain proxying).
+    ///
+    /// CERTENV-1: one file per issuer environment -
+    /// `{data_dir}/upstream/{env}/account.json`. An ACME kid is bound to
+    /// the directory that issued it (RFC 8555 §7.3), so a single shared
+    /// file made a staging/production switch a permanent
+    /// `accountDoesNotExist` on every order (the 2026-11-20 migration had
+    /// to park the file by hand). Namespacing by [`Self::issuer_env`]
+    /// retires that failure class: the account for the configured
+    /// directory is the only one this process can read.
     pub fn upstream_account_path(&self) -> PathBuf {
-        self.data_dir.join("upstream-account.json")
+        PathBuf::from(sentin8::config::upstream_account_dir_for(
+            &self.data_dir.to_string_lossy(),
+            &self.issuer_env(),
+        ))
+        .join("account.json")
+    }
+
+    /// The issuer environment this configuration targets - `local`,
+    /// `staging`, `production`, or `custom-{host}` (CERTENV-1). The single
+    /// word the account path, the certificate provenance stamp, and the
+    /// `sentin8-tls` leaf cache are all namespaced by, so a directory
+    /// switch moves every issuer-scoped store together.
+    pub fn issuer_env(&self) -> String {
+        sentin8::config::upstream_env_for(&self.upstream_directory_url, self.force_internal)
     }
 
     /// Whether ACME proxy mode is enabled (non-empty upstream URL).

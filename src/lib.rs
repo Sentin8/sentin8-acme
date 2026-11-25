@@ -17,6 +17,9 @@
 pub mod acme;
 /// Admin UI (RFW) handlers.
 pub mod admin_ui;
+/// Outbound issuance budget - the flood valve on the upstream CA
+/// (CERTBUDGET-1, acme DESIGN.md §4.2c).
+pub mod budget;
 /// CA hierarchy generation and leaf signing.
 pub mod ca;
 /// Environment configuration.

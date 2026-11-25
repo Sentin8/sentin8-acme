@@ -338,8 +338,8 @@ divergence is structurally impossible.
 | `ca/root-ca.crt`, `intermediate-ca.crt` | public CA certs | OS + NSS trust store install |
 | `accounts/{uuid}.json` | ACME accounts | service-only |
 | `orders/{uuid}.json`, `orders/authz-{uuid}.json` | order/authz/challenge state | service-only |
-| `certificates/{cert-id}/cert.pem`, `key.pem`, `metadata.json` | leaf + key + metadata (`metadata.json` records `pq_mode` - the reuse-before-mint lookup filters on it) | keys 0600 |
-| `upstream-account.json` | upstream ACME account key + kid (ES256) | 0600 |
+| `certificates/{cert-id}/cert.pem`, `key.pem`, `metadata.json` | leaf + key + metadata (`metadata.json` records `pq_mode` and `issuer` - the reuse-before-mint lookup filters on both) | keys 0600 |
+| `upstream/{env}/account.json` | upstream ACME account key + kid (ES256), one directory per issuer environment (CERTENV-1) | 0600 |
 | `.run/bootstrap-enrollment.json.enc` (captain-owned) | sealed enrollment claim | AES-256-GCM sealed, 0600 |
 
 **CA families per mode (PQCA-2)**: the `classical` mode mints the ECDSA
@@ -569,19 +569,21 @@ flowchart TD
 - **Revocation interaction:** a revoked certificate is never reused;
   revocation forces a genuinely fresh mint on the next finalize.
 - **External orders (upstream source) reuse too - ISSUER-CHECKED
-  (RIGMODE-1):** the scan distinguishes `source`; an upstream-signed
-  live leaf ends ONLY an external order (RIGMODE-1's rate-limit motive:
-  a public CA's issuance limits are per-domain-per-week, so a fleet
-  restart that re-orders an existing valid leaf against Let's Encrypt
-  burns allowance for nothing; with reuse the re-finalize is idempotent
-  against the relay cache). The cross-source case is the mode-flip
-  story: after `platform` -> `public`, the domain already carries a
-  live platform-CA leaf - a source-blind hit would return it and the
-  upstream-issued expectation would never materialize; the source
-  filter forces the fresh upstream order (and vice-versa: a local
-  order never re-uses an upstream leaf). The reuse hit also completes
-  WITHOUT the upstream round trip - the order never re-opens the
-  upstream's authz.
+  (RIGMODE-1, extended by CERTENV-1):** the scan keys on a provenance
+  STAMP, not the bare `source` word: `local` for a platform-CA leaf,
+  `upstream:{env}` for one a public CA issued. `{env}` is the same
+  directory-derived word the account path and the leaf cache use, so an
+  `upstream:staging` leaf ends ONLY a staging order and a
+  `upstream:production` leaf ends ONLY a production one. A legacy record
+  without the stamp backfills to `upstream:production` (every upstream
+  leaf minted before the field existed came from the production account),
+  never to a wildcard. The cross-source case is the mode-flip story: after
+  `platform` -> `public`, the domain already carries a live platform-CA
+  leaf - a source-blind hit would return it and the upstream-issued
+  expectation would never materialize; the filter forces the fresh
+  upstream order (and vice-versa: a local order never re-uses an upstream
+  leaf). The reuse hit also completes WITHOUT the upstream round trip -
+  the order never re-opens the upstream's authz.
 - **Concurrent finalize race:** two concurrent finalizes for the same
   domain may both miss and both mint - the last writer wins the order
   URL and both certs remain valid leaves (the caller's persisted pair is
@@ -783,6 +785,18 @@ exposure mechanism off.
 | `false` / unset | set | `external` entries relay upstream |
 | `false` / unset | empty | external orders **rejected**, never downgraded |
 
+**The allowlist is deliberately absent.** An earlier revision of this
+document specified a tier-A hostname allowlist
+(`SENTIN8_ACME_PUBLIC_HOSTNAMES`, CERTTIER-1) as a second gate on the
+relay. It was removed: the eligible set is not static. Environments are
+created at runtime per tenant, so a hostname list is stale the moment a
+new tenant enrolls - either it silently blocks a legitimate public name
+or it becomes an operator chore that defeats its own purpose. The
+exposure map is already the dynamic declaration (it is published by the
+thing that creates the env), and minting is lazy per SNI, so a fleet does
+not fan out orders by merely existing. Flood control is a BUDGET, not a
+name list - see §4.2c.
+
 `SENTIN8_ACME_UPSTREAM_CA_PEM` is NOT part of this switch - it is only an
 outbound trust pin for the TLS connection to the upstream. Empty means
 "verify the upstream against the system roots", which is the normal case
@@ -796,6 +810,81 @@ domain per week, and a failed conformance battery can consume that budget
 in one pass. `sentin8 captain services` prints this as an `ACME` line
 under `Infrastructure:`, calling out production Let's Encrypt by name so
 a misconfigured rig is visible before a battery runs.
+
+### 4.1c Issuer-environment isolation (CERTENV-1)
+
+PQCA-1 namespaces every store by the transport posture. CERTENV-1 applies
+the same argument one level down: **which public CA issued a leaf is a
+property as load-bearing as its key family**, so every issuer-scoped store
+is namespaced by an *issuer environment* word derived once from the
+directory URL.
+
+```
+upstream_env = local                              # force-internal, or no URL
+             | staging                           # LE staging directory
+             | production                        # LE production directory
+             | custom-{sanitized-host}           # any other directory
+```
+
+| Store | Path | Separated by |
+|---|---|---|
+| upstream ACME account | `{data_dir}/{pq_mode}/upstream/{env}/account.json` | PQ mode + env |
+| certificate provenance | `metadata.json` → `issuer: "upstream:{env}"` | PQ mode + env (stamp) |
+| `sentin8-tls` leaf cache - upstream leaves | `{secrets}/tls-certs/{pq_mode}/{env}/` | PQ mode + env |
+| `sentin8-tls` leaf cache - **platform-CA leaves** | `{secrets}/tls-certs/{pq_mode}/platform/` | PQ mode only |
+
+**The cache is keyed by WHO SIGNED the leaf, not by the configured
+upstream.** That distinction is the whole design:
+
+- A **platform-CA** leaf is valid under ANY upstream selection. The
+  platform plane (`{label}.ops.sys.{root}`, the mTLS workload pairs) is
+  always internal - the exposure map never makes it public - so its leaf
+  does not depend on which public CA is configured. These live in a
+  **shared** `platform/` dir that is ALWAYS scanned.
+- An **upstream** leaf IS issuer-scoped: a Let's Encrypt staging chain
+  must never answer when the fleet is pointed at production (and vice
+  versa), because its chain is not publicly trusted. These live under
+  their own environment.
+
+Scoping platform leaves by upstream environment instead would strand the
+entire platform plane on a switch: every service would find no cached
+leaf for its own SNI, the resolver would reject the handshake
+(`access_denied`, TLS alert 49), captain's health probe would fail three
+times, and the supervisor would kill a perfectly healthy service. That
+failure was observed live on 2026-11-25.
+
+Both properties together give the **non-destructive switch**: `local`,
+`staging`, `production` and `platform` coexist on disk, an operator flips
+`SENTIN8_ACME_UPSTREAM_DIRECTORY_URL` (or `FORCE_INTERNAL`) and nothing is
+deleted, nothing is stranded, and switching back finds every leaf intact.
+
+**Why the account must be split.** An ACME account key is
+directory-agnostic but its **kid is not** - the kid carries the authority
+that issued it (`https://acme-v02.../acme/acct/123`). A single file meant a
+staging→production switch presented staging's kid to production: a
+permanent `accountDoesNotExist` on every order, with no self-heal path
+(only `badNonce` is retried). Namespacing makes the mismatch
+unconstructible; the boot-time adoption path migrates a legacy file into
+its kid's directory only when the kid's authority matches the configured
+directory.
+
+**Why the provenance must be split.** `source: "local" | "upstream"` is a
+binary - it cannot distinguish staging from production, so a staging leaf
+satisfied a production order and vice versa. The stamp does. Legacy
+records (no `issuer`) backfill to `upstream:production`, the only public
+issuer that predates the field; a legacy leaf is therefore never mistaken
+for a match under another environment.
+
+**Why the leaf cache must be split.** `sentin8-tls` persists every minted
+leaf and pre-warms from disk at boot with **zero** mint round-trips. Without
+the env segment, a prewarmed staging leaf (or a stale platform-CA leaf from
+a previous posture) is served for the active directory and the ACME path is
+never reached - a "staging run" that never talks to staging, and a
+"production run" serving an untrusted chain.
+
+The word is derived from the operator's single knob, so there is nothing to
+keep in sync: changing `SENTIN8_ACME_UPSTREAM_DIRECTORY_URL` moves the
+account, the reuse universe, and the prewarm cache together.
 
 **Unit tests never dial a CA.** The acme test suite asserts on the
 directory URL as a value (`may_order_external`, decision matrix) and
@@ -830,17 +919,20 @@ acme terminates the platform's own simplified protocol and speaks
 standards-compliant ACME outbound:
 
 - **Account**: ES256 account key generated once, persisted at
-  `upstream-account.json` (`upstream_account_path()`, 0600) alongside its
+  `{data_dir}/upstream/{env}/account.json` (CERTENV-1, 0600) alongside its
   kid; registered against the upstream `newAccount` endpoint on first
-  external order (contact from `SENTIN8_ACME_UPSTREAM_CONTACT`). The
-  file is per-PQ-mode-dir only - it is NOT namespaced by directory: the
-  same file carries the account for WHICHEVER upstream the process is
-  configured against. A directory switch (staging → production) with
-  an un-migrated file makes acme present the old directory's kid to the
-  new one - a permanent 400/401 on every order until the file is moved
-  aside (the migration on 2026-11-20 parked it as
-  `upstream-account.staging.json`; the operator re-registers fresh on
-  first production order).
+  external order (contact from `SENTIN8_ACME_UPSTREAM_CONTACT`). The file is
+  per-PQ-mode AND per-issuer-environment: `{env}` is derived once from the
+  directory URL ([`upstream_env_for`] - `local`, `staging`, `production`,
+  or `custom-{host}`), so the account for the configured directory is the
+  only one this process can read. Before CERTENV-1 a single
+  `upstream-account.json` carried whichever directory's kid was registered
+  last, and a staging → production switch meant a permanent
+  `accountDoesNotExist` on every order until the file was parked by hand
+  (the migration on 2026-11-20 did exactly that). The boot-time adoption
+  path retires the class: a legacy file is moved into its kid's directory
+  when the kid's authority matches the configured directory, and skipped
+  otherwise.
 - **Every request is JWS-signed** (RFC 8555 §6.2: ES256, `kid` or
   embedded JWK for the initial newAccount, nonce from a fresh
   `newNonce` fetch, `url` header matching the target, `Content-Type:
@@ -1007,6 +1099,66 @@ integration suite:
   the validator fetches on its own schedule and the caller's
   re-finalize drives it forward. Dropping the proof on a transient
   reject made every later retry permanently unvalidatable.
+
+### 4.2c Outbound issuance budget - the flood valve (CERTBUDGET-1)
+
+The exposure map (§4.1) decides WHICH names may be publicly signed. It
+says nothing about HOW MANY orders leave the box, and that is the quantity
+a public CA actually meters:
+
+| Let's Encrypt limit | scope |
+|---|---|
+| **50 certificates / registered domain / week** | every account and customer on the domain |
+| 300 new orders / account / 3h | the account |
+| 5 duplicate certificates / exact SAN set / week | the SAN set |
+
+A retry loop, a cold-fleet cold start, or a bad rollout can consume a
+whole week's allowance for every tenant under a domain. So every upstream
+order passes a three-window budget (`src/budget.rs`):
+
+| window | default | what it stops |
+|---|---|---|
+| per hostname / 24h | 3 | one domain's retry loop |
+| per hour, all names | 30 | a burst from a cold fleet / bad rollout |
+| per week, all names | 40 | an afternoon-long storm eating the 50/wk cap |
+
+Knobs: `SENTIN8_ACME_BUDGET_PER_HOST_PER_DAY`, `..._PER_HOUR`,
+`..._PER_WEEK`. Defaults sit BELOW the CA's real limits so renewals and
+manual recovery always have headroom. A malformed value falls back to the
+default (never to "unlimited").
+
+**Where the check runs.** At the ORDER site, AFTER the reuse-before-mint
+lookup: a cached leaf ends the order without touching the upstream, so it
+must never consume budget. A refusal is `429 Too Many Requests` + a
+`Retry-After` hint and an ACME `rateLimited` problem document, which the
+`sentin8-tls` fetcher already treats as a retryable failure - the same
+shape a real CA rejection has, so no client change is needed.
+
+**Counters live in Valkey** (`acme:budget:*`, already inside acme's
+`~acme:*` ACL grant with `INCR`/`EXPIRE` - no permission change). They
+must survive a process restart: an in-memory counter resets with the
+fleet, which is precisely when a retry storm happens. Keys are
+epoch-derivable (`ts/3600`, `ts/604800`) so windows roll without a
+sweeper, and the hostname is hashed so a client-supplied SNI can neither
+inject a key separator nor grow the key.
+
+**Valkey outage ⇒ in-memory fallback, never fail-open.** The guard must
+not turn a cache blip into a fleet-wide cert outage, but it also must not
+disable itself: the process-local window keeps bounding the burn and
+every admission in degraded mode logs at `warn`.
+
+**The CA's own answer is the last line of defence.** When the upstream
+returns `urn:ietf:params:acme:error:rateLimited`, `note_rate_limited`
+parks ALL upstream ordering for the CA's `Retry-After` (floor one hour) in
+`acme:budget:cooldown`. That signal is authoritative and arrives exactly
+when the local arithmetic was too optimistic - it is what makes the valve
+self-correcting rather than merely conservative.
+
+**Why not a hostname allowlist.** That was the earlier design
+(`SENTIN8_ACME_PUBLIC_HOSTNAMES`, CERTTIER-1) and it is the wrong shape:
+environments are created at runtime per tenant, so a hand-maintained list
+is stale the moment a tenant enrolls. A budget bounds the quantity the CA
+meters with no per-name configuration at all.
 
 ### 4.3 HTTP-01 challenge serving
 

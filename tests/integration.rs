@@ -54,6 +54,7 @@ mod tests {
             upstream_contact: "a@m.n".into(),
             upstream_ca_pem: String::new(),
             force_internal: false,
+            budget: sentin8_acme_server::budget::Budget::default(),
             dns_provider: String::new(),
             dns_api_token: String::new(),
             dns_zone: String::new(),
@@ -568,6 +569,51 @@ mod tests {
                 upstream
             );
         }
+    }
+
+    /// A hostname the operator never declared must never reach a public CA,
+    /// regardless of either env switch.
+    ///
+    /// CERTENV-1: the issuer environment is derived from the directory URL,
+    /// so the account path, the provenance stamp and the leaf cache all move
+    /// together on a switch.
+    #[test]
+    fn issuer_env_derivation() {
+        install_provider();
+
+        let staging = "https://acme-staging-v02.api.letsencrypt.org/directory";
+        let production = "https://acme-v02.api.letsencrypt.org/directory";
+
+        let mut config = mk_config();
+        config.upstream_directory_url = staging.into();
+        assert_eq!(config.issuer_env(), "staging");
+        let staging_account = config.upstream_account_path();
+
+        config.upstream_directory_url = production.into();
+        assert_eq!(config.issuer_env(), "production");
+        let production_account = config.upstream_account_path();
+
+        // The two accounts live in different directories - a switch can
+        // never present one directory's kid to the other.
+        assert_ne!(staging_account, production_account);
+        assert!(staging_account.to_string_lossy().contains("/upstream/staging/"));
+        assert!(production_account.to_string_lossy().contains("/upstream/production/"));
+
+        // force_internal wins: no outbound path, so nothing is namespaced
+        // by a directory the box cannot reach.
+        config.force_internal = true;
+        assert_eq!(config.issuer_env(), "local");
+        assert!(config
+            .upstream_account_path()
+            .to_string_lossy()
+            .contains("/upstream/local/"));
+
+        // An unnamed provider still gets its own universe, never shared
+        // with production.
+        config.force_internal = false;
+        config.upstream_directory_url = "https://acme.zerossl.com/v2/DV90".into();
+        assert_eq!(config.issuer_env(), "custom-acme-zerossl-com");
+        assert_ne!(config.upstream_account_path(), production_account);
     }
 
     /// A hostname the operator never declared must never reach a public CA,
@@ -1581,6 +1627,9 @@ mod tests {
                 "serial": cache_id,
                 "revoked": false,
                 "source": "upstream",
+                // CERTENV-1: the provenance stamp the reuse scan keys on -
+                // must name the directory this config is pointed at.
+                "issuer": format!("upstream:{}", config.issuer_env()),
             });
             std::fs::write(config.cert_meta_path(cache_id), meta.to_string()).unwrap();
 
@@ -1622,6 +1671,86 @@ mod tests {
 
             std::fs::remove_dir_all(&config.data_dir).ok();
         });
+    }
+
+    /// CERTENV-1: a leaf minted against one upstream directory must never
+    /// satisfy an order placed against another - and a LEGACY record
+    /// (no `issuer` field) must not silently match every directory either.
+    ///
+    /// Exercises the reuse scan directly (the order path is a thin wrapper
+    /// over it); the classification/relay half is covered by
+    /// `order_site_reuse_skips_upstream_relay`.
+    #[test]
+    fn staging_leaf_never_satisfies_production_order() {
+        install_provider();
+        use sentin8_acme_server::acme::find_reusable_cert;
+
+        let mut config = mk_config();
+        // The ACTIVE config targets STAGING; the store holds PRODUCTION
+        // leaves. A hit here would serve an untrusted chain.
+        config.upstream_directory_url =
+            "https://acme-staging-v02.api.letsencrypt.org/directory".into();
+        config.init_dirs().unwrap();
+        assert_eq!(config.issuer_env(), "staging");
+
+        let ca_family = CaFamily::ensure(&config).unwrap();
+        let (leaf_pem, key_pem) = ca_family
+            .sign_leaf("example.dev", &["example.dev".to_string()], 90)
+            .unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        // Seed a leaf with an explicit (or absent) provenance stamp.
+        let seed = |id: &str, issuer: serde_json::Value| {
+            let dir = config.cert_dir(id);
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(config.cert_path(id), &leaf_pem).unwrap();
+            std::fs::write(config.cert_key_path(id), &key_pem).unwrap();
+            let mut meta = serde_json::json!({
+                "domain": "example.dev",
+                "pq_mode": sentin8::config::pq_mode(),
+                "issued_at": now,
+                "expires_at": now + 86400,
+                "serial": id,
+                "revoked": false,
+                "source": "upstream",
+            });
+            if !issuer.is_null() {
+                meta["issuer"] = issuer;
+            }
+            std::fs::write(config.cert_meta_path(id), meta.to_string()).unwrap();
+        };
+
+        // (a) a PRODUCTION-stamped leaf is NOT reusable under staging.
+        seed("prod-cert", serde_json::json!("upstream:production"));
+        assert!(
+            find_reusable_cert(&config, "example.dev", "upstream").is_none(),
+            "a production-stamped leaf must not satisfy an order under another issuer env"
+        );
+        // Positive control: the same store DOES serve staging, so the scan
+        // is running and only the stamp differs.
+        std::fs::remove_file(config.cert_meta_path("prod-cert")).ok();
+        seed("prod-cert", serde_json::json!("upstream:staging"));
+        assert!(
+            find_reusable_cert(&config, "example.dev", "upstream").is_some(),
+            "a staging-stamped leaf must satisfy a staging order"
+        );
+
+        // (b) a LEGACY record (no `issuer`) backfills to PRODUCTION, so it
+        // is likewise unusable under staging - never a wildcard match.
+        std::fs::remove_dir_all(config.cert_dir("prod-cert")).ok();
+        seed("legacy-cert", serde_json::Value::Null);
+        assert!(
+            find_reusable_cert(&config, "example.dev", "upstream").is_none(),
+            "a legacy (issuer-less) upstream leaf backfills to production and must not be reused under another env"
+        );
+
+        // (c) a LOCAL order never consumes an upstream leaf in either
+        // direction (RIGMODE-1 source filter, unchanged).
+        assert!(find_reusable_cert(&config, "example.dev", "local").is_none());
+
+        std::fs::remove_dir_all(&config.data_dir).ok();
     }
 
     /// A deterministic-ish ES256 test key (random is fine - the tests

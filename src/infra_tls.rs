@@ -130,6 +130,7 @@ pub fn offline_config() -> AcmeConfig {
         upstream_contact: String::new(),
         upstream_ca_pem: String::new(),
         force_internal: false,
+        budget: crate::budget::Budget::default(),
         dns_provider: String::new(),
         dns_api_token: String::new(),
         dns_zone: String::new(),

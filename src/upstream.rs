@@ -107,6 +107,13 @@ pub struct UpstreamClient {
     directory_url: String,
     contact: String,
     account_path: std::path::PathBuf,
+    /// CERTENV-1 migration source: the pre-namespacing account file that
+    /// sat at the mode root (`{data_dir}/upstream-account.json`), plus the
+    /// hand-parked `upstream-account.staging.json` an earlier directory
+    /// switch left behind. Read only when `account_path` is absent; the
+    /// account is moved into its issuer environment's directory so the
+    /// file and the kid that indexes it can never disagree.
+    legacy_account_paths: Vec<std::path::PathBuf>,
     account: tokio::sync::RwLock<Option<UpstreamAccount>>,
     nonce: tokio::sync::RwLock<Option<String>>,
     /// HTTP-01 key authorizations captured at newOrder time, keyed by the
@@ -269,12 +276,86 @@ impl UpstreamClient {
             directory_url: config.upstream_directory_url.clone(),
             contact: config.upstream_contact.clone(),
             account_path: config.upstream_account_path(),
+            legacy_account_paths: vec![
+                config.data_dir.join("upstream-account.json"),
+                config.data_dir.join("upstream-account.staging.json"),
+                config.data_dir.join("upstream-account.production.json"),
+            ],
             account: Default::default(),
             nonce: Default::default(),
             challenge_tokens: Default::default(),
             dns,
             dns01_records: Default::default(),
         })
+    }
+
+    /// Adopt a pre-namespacing account file into this client's issuer
+    /// directory (CERTENV-1), returning it on success.
+    ///
+    /// The ACCOUNT KEY is directory-agnostic (an ES256 private key), but
+    /// the KID is not: it carries the directory that issued it
+    /// (`https://acme-v02.../acme/acct/123`). So the adoption is decided by
+    /// the kid's authority, compared against this client's directory URL -
+    /// a staging account is adopted only by the staging client, a
+    /// production account only by the production one. A mismatch is
+    /// skipped (NOT an error): the caller falls through to a fresh
+    /// registration against the directory it actually targets.
+    ///
+    /// On adoption the file is MOVED (not copied) into the environment's
+    /// directory, so the fleet converges on one account per environment and
+    /// the mode root stops carrying issuer state.
+    fn adopt_legacy_account(&self) -> Option<UpstreamAccount> {
+        let authority = |url: &str| -> String {
+            url.trim()
+                .split("://")
+                .nth(1)
+                .unwrap_or(url)
+                .split('/')
+                .next()
+                .unwrap_or("")
+                .to_ascii_lowercase()
+        };
+        let wanted = authority(&self.directory_url);
+        for legacy in &self.legacy_account_paths {
+            if legacy == &self.account_path {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(legacy) else {
+                continue;
+            };
+            let Ok(acct) = serde_json::from_str::<UpstreamAccount>(&text) else {
+                continue;
+            };
+            if authority(&acct.kid) != wanted {
+                continue;
+            }
+            if let Some(dir) = self.account_path.parent() {
+                if std::fs::create_dir_all(dir).is_err() {
+                    continue;
+                }
+            }
+            match std::fs::write(&self.account_path, serde_json::to_string(&acct).unwrap()) {
+                Ok(()) => {
+                    set_0600(&self.account_path);
+                    let _ = std::fs::remove_file(legacy);
+                    tracing::info!(
+                        from = %legacy.display(),
+                        to = %self.account_path.display(),
+                        kid = %acct.kid,
+                        "acme: adopted legacy upstream account into its issuer environment (CERTENV-1)"
+                    );
+                    return Some(acct);
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        from = %legacy.display(),
+                        error = %e,
+                        "acme: legacy account adoption failed - will register fresh"
+                    );
+                }
+            }
+        }
+        None
     }
 
     async fn fetch_directory(&self) -> Result<Value, UpstreamError> {
@@ -311,7 +392,8 @@ impl UpstreamClient {
     }
 
     /// Load or register the upstream account (idempotent across boots; the
-    /// key + kid persist at `upstream-account.json`, 0600).
+    /// key + kid persist at `{data_dir}/upstream/{env}/account.json`, 0600 -
+    /// CERTENV-1 keeps one account per issuer environment).
     async fn ensure_account(&self) -> Result<UpstreamAccount, UpstreamError> {
         if let Some(acct) = self.account.read().await.clone() {
             return Ok(acct);
@@ -321,6 +403,15 @@ impl UpstreamClient {
                 *self.account.write().await = Some(acct.clone());
                 return Ok(acct);
             }
+        }
+        // CERTENV-1 migration: the account file predates issuer
+        // namespacing, so it sits at the mode root. Adopt it ONLY when its
+        // kid names the directory this client is configured against -
+        // adopting a foreign kid would reproduce the exact permanent
+        // `accountDoesNotExist` the namespacing exists to prevent.
+        if let Some(acct) = self.adopt_legacy_account() {
+            *self.account.write().await = Some(acct.clone());
+            return Ok(acct);
         }
         // First use: generate the ES256 key and register the account with
         // the JWK embedded in the protected header (RFC 8555 §7.4 - JWK
